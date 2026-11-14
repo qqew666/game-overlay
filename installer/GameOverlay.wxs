@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package Name="GameOverlay" Manufacturer="GameOverlay" Version="1.0.0.0"
+           UpgradeCode="7C1B0D1A-3F4E-4A2B-9C55-9F1E0B2A6D31"
+           Scope="perUser" Compressed="yes">
+
+    <MajorUpgrade DowngradeErrorMessage="A newer version of GameOverlay is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="app.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPNOREPAIR" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="GameOverlay" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="AppShortcutFolder" Name="GameOverlay" />
+    </StandardDirectory>
+
+    <ComponentGroup Id="ProductComponents">
+      <Component Id="MainExecutable" Directory="INSTALLFOLDER" Guid="2B9A1F30-8C4D-4E77-9F1B-6D2A55C0E114">
+        <File Id="GameOverlayExe" Name="GameOverlay.exe" Source="GameOverlay.exe" KeyPath="yes" />
+      </Component>
+      <Component Id="Readme" Directory="INSTALLFOLDER" Guid="9C4E7D21-33A8-4B0F-8E5D-1A7C42B9F003">
+        <File Id="ReadmeTxt" Name="README.txt" Source="README.txt" KeyPath="yes" />
+      </Component>
+      <Component Id="StartMenuShortcut" Directory="AppShortcutFolder" Guid="5B7C2D18-9E44-4A63-B2F1-7C8D3E9A5B21">
+        <Shortcut Id="StartMenuGameOverlay" Name="GameOverlay"
+                  Description="Overlay showing FPS and ping in games"
+                  Target="[INSTALLFOLDER]GameOverlay.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RemoveFolder Id="RemoveAppShortcutFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\GameOverlay" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="MainFeature" Title="GameOverlay" Level="1">
+      <ComponentGroupRef Id="ProductComponents" />
+    </Feature>
+  </Package>
+</Wix>
