@@ -1,15 +1,34 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
-  <Package Name="GameOverlay" Manufacturer="GameOverlay" Version="1.0.0.0"
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="GameOverlay"
+           Manufacturer="Maklyxa"
+           Version="1.1.0.0"
            UpgradeCode="7C1B0D1A-3F4E-4A2B-9C55-9F1E0B2A6D31"
-           Scope="perUser" Compressed="yes">
+           Scope="perUser"
+           Codepage="65001"
+           Compressed="yes">
+
+    <SummaryInformation
+        Description="GameOverlay - FPS and ping overlay for games"
+        Manufacturer="Maklyxa" />
 
     <MajorUpgrade DowngradeErrorMessage="A newer version of GameOverlay is already installed." />
     <MediaTemplate EmbedCab="yes" />
 
+    <!-- Installation wizard (Welcome / Licence / Progress / Finish). -->
+    <ui:WixUI Id="WixUI_Minimal" />
+    <WixVariable Id="WixUILicenseRtf" Value="License.rtf" />
+
     <Icon Id="AppIcon" SourceFile="app.ico" />
     <Property Id="ARPPRODUCTICON" Value="AppIcon" />
     <Property Id="ARPNOREPAIR" Value="1" />
+    <Property Id="ARPCONTACT" Value="Maklyxa" />
+    <Property Id="ARPPRODUCT" Value="GameOverlay" />
+    <Property Id="ARPCOMMENTS" Value="FPS and ping overlay for games" />
+    <Property Id="ARPDISABLEREMOVE" Value="0" />
+    <Property Id="MSIINSTALLPERUSER" Value="1" />
+    <Property Id="INSTALLDESKTOPSHORTCUT" Value="1" />
 
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">
@@ -19,25 +38,56 @@
     <StandardDirectory Id="ProgramMenuFolder">
       <Directory Id="AppShortcutFolder" Name="GameOverlay" />
     </StandardDirectory>
+    <StandardDirectory Id="DesktopFolder" />
 
     <ComponentGroup Id="ProductComponents">
       <Component Id="MainExecutable" Directory="INSTALLFOLDER" Guid="2B9A1F30-8C4D-4E77-9F1B-6D2A55C0E114">
         <File Id="GameOverlayExe" Name="GameOverlay.exe" Source="GameOverlay.exe" KeyPath="yes" />
       </Component>
+
       <Component Id="Readme" Directory="INSTALLFOLDER" Guid="9C4E7D21-33A8-4B0F-8E5D-1A7C42B9F003">
         <File Id="ReadmeTxt" Name="README.txt" Source="README.txt" KeyPath="yes" />
       </Component>
+
       <Component Id="StartMenuShortcut" Directory="AppShortcutFolder" Guid="5B7C2D18-9E44-4A63-B2F1-7C8D3E9A5B21">
         <Shortcut Id="StartMenuGameOverlay" Name="GameOverlay"
-                  Description="Overlay showing FPS and ping in games"
-                  Target="[INSTALLFOLDER]GameOverlay.exe" WorkingDirectory="INSTALLFOLDER" />
+                  Description="Оверлей с FPS и пингом"
+                  Target="[INSTALLFOLDER]GameOverlay.exe" WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
         <RemoveFolder Id="RemoveAppShortcutFolder" On="uninstall" />
         <RegistryValue Root="HKCU" Key="Software\GameOverlay" Name="Installed" Type="integer" Value="1" KeyPath="yes" />
       </Component>
+
+      <Component Id="DesktopShortcut" Directory="DesktopFolder" Guid="C4A1E872-5D3F-4B90-A71E-2F6B8D401C55">
+        <Shortcut Id="DesktopGameOverlay" Name="GameOverlay"
+                  Description="Оверлей с FPS и пингом"
+                  Target="[INSTALLFOLDER]GameOverlay.exe" WorkingDirectory="INSTALLFOLDER"
+                  Icon="AppIcon" />
+        <RegistryValue Root="HKCU" Key="Software\GameOverlay" Name="DesktopShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+
+      <!-- Starts with Windows for the current user, no elevation required. -->
+      <Component Id="AutostartEntry" Directory="INSTALLFOLDER" Guid="E17D5C33-6A29-4F81-9B4D-3C8A55E0F762">
+        <RegistryValue Root="HKCU"
+                       Key="Software\Microsoft\Windows\CurrentVersion\Run"
+                       Name="GameOverlay"
+                       Type="string"
+                       Value="&quot;[INSTALLFOLDER]GameOverlay.exe&quot; --tray-quiet"
+                       KeyPath="yes" />
+      </Component>
     </ComponentGroup>
 
-    <Feature Id="MainFeature" Title="GameOverlay" Level="1">
-      <ComponentGroupRef Id="ProductComponents" />
+    <Feature Id="MainFeature" Title="GameOverlay" Level="1"
+             Description="Оверлей с FPS и пингом">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="Readme" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="AutostartEntry" />
+    </Feature>
+
+    <Feature Id="DesktopShortcutFeature" Title="Ярлык на рабочем столе" Level="1"
+             AllowAbsent="yes" Description="Создать ярлык GameOverlay на рабочем столе">
+      <ComponentRef Id="DesktopShortcut" />
     </Feature>
   </Package>
 </Wix>

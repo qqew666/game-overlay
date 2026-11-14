@@ -7,30 +7,44 @@
 
 ## Возможности
 
-- Прозрачное окно поверх игры: кликабельность не блокируется (click-through), фокус не перехватывается
-- FPS по счётчикам present'ов DWM (`cDXPresentSubmitted`) сглаживанием
-- Пинг двумя методами: ICMP echo через raw-сокет (свой заголовок + контрольная сумма) и TCP-замер времени установления соединения (авто-откат, если ICMP режут)
+- Прозрачное окно поверх игры с настоящей альфой (`UpdateLayeredWindow`):
+  скруглённая карточка, мягкая тень, никакого квадратного фона; клики проходят
+  сквозь оверлей, фокус не перехватывается
+- Отрисовка через GDI+ с антиалиасингом: крупные цифры, цвет по порогам
+  (зелёный / жёлтый / оранжевый / красный), градиентная полоса-акцент
+- Бойкиссер в углу — векторный, рисуется кодом, масштабируется без потерь
+- График пинга за последнюю минуту и точка на последнем замере
+- Пинг с десятыми долями ниже 10 мс: 0.4 мс и 3.7 мс — разные маршруты
+- Два метода замера: ICMP echo через raw-сокет (свой заголовок + контрольная
+  сумма) и TCP-замер времени установления соединения (авто-откат, если ICMP режут)
 - Несколько целей пинга с переключением по горячей клавише
 - Оверлей следует за окном активной игры
-- Установщик MSI (WiX 5), установка в профиль пользователя — права администратора не нужны
+- Автозапуск с Windows: запись в `HKCU\...\Run`, переключается клавишей `F6`
+  или флагами CLI, установщик ставит её сразу
+- Установщик MSI (WiX 5) с мастером установки, лицензией, ярлыками в меню
+  «Пуск» и на рабочем столе
 
 ## Установка
 
-**MSI** (рекомендуется): `GameOverlay-1.0.0-x64.msi` из релизов →
-`%LOCALAPPDATA%\Programs\GameOverlay`, ярлык в меню «Пуск».
+**MSI** (рекомендуется): `GameOverlay-1.1.0-x64.msi` из релизов →
+`%LOCALAPPDATA%\Programs\GameOverlay`, ярлык в меню «Пуск», автозапуск.
+Права администратора не нужны.
 
-**Portable**: распаковать `GameOverlay-1.0.0-portable.zip` и запустить `GameOverlay.exe`.
+**Portable**: распаковать `GameOverlay-1.1.0-portable.zip` и запустить `GameOverlay.exe`.
 
 ## Использование
 
 ```
 GameOverlay.exe                          # пинг до 1.1.1.1:443 (ICMP)
-GameOverlay.exe --host game.example.com # конкретный сервер
-GameOverlay.exe --port 25565            # порт для TCP-замера
+GameOverlay.exe --host game.example.com  # конкретный сервер
+GameOverlay.exe --port 25565             # порт для TCP-замера
 GameOverlay.exe --targets "1.1.1.1:443,8.8.8.8:53"   # несколько целей
-GameOverlay.exe --mode tcp              # только TCP-замер
-GameOverlay.exe --fixed-position        # не следовать за окном игры
-GameOverlay.exe --verbose               # печатать FPS/пинг в консоль
+GameOverlay.exe --mode tcp               # только TCP-замер
+GameOverlay.exe --fixed-position         # не следовать за окном игры
+GameOverlay.exe --autostart              # включить автозапуск и запуститься
+GameOverlay.exe --no-autostart           # выключить автозапуск
+GameOverlay.exe --autostart-status       # показать состояние автозапуска
+GameOverlay.exe --verbose                # печатать FPS/пинг в консоль
 ```
 
 ### Горячие клавиши
@@ -40,6 +54,7 @@ GameOverlay.exe --verbose               # печатать FPS/пинг в ко�
 | `F1` | показать / скрыть оверлей |
 | `F2` / `F3` | следующая / предыдущая цель пинга |
 | `F4` | следовать за окном игры / фиксированная позиция |
+| `F6` | включить / выключить автозапуск |
 | `End` | выход |
 
 ## Как считаются метрики
@@ -47,7 +62,7 @@ GameOverlay.exe --verbose               # печатать FPS/пинг в ко�
 **FPS** — счётчики `cDXPresentSubmitted` / `cFrameSubmitted` из `DwmGetCompositionTimingInfo`.
 Запрос по конкретному `HWND` на части сборок Windows возвращает `E_INVALIDARG`,
 поэтому используется глобальный счётчик DWM: во время игры основной вклад даёт
-сама игра.
+сама игра. Значение сглаживается (0.6 старого + 0.4 нового), чтобы цифры не дёргались.
 
 **Пинг** — ICMP echo request через raw-сокет (`SOCK_RAW`, `IPPROTO_ICMP`):
 заголовок ICMP (type 8, code 0, id, sequence) + контрольная сумма + payload,
@@ -58,7 +73,7 @@ ICMP-заголовок лежит за `IHL`-байтами IP-заголовк
 
 ## Ограничения
 
-- Оверлей отрисовывается GDI и виден в оконном / borderless-режиме. В
+- Оверлей отрисовывается GDI+ и виден в оконном / borderless-режиме. В
   эксклюзивном fullscreen его перекрывает сама игра — переключите игру в
   borderless (Alt+Enter) или оконный режим. Там же не растут счётчики DWM,
   поэтому FPS в эксклюзивном fullscreen не измеряется.
@@ -68,24 +83,26 @@ ICMP-заголовок лежит за `IHL`-байтами IP-заголовк
 
 ```powershell
 # Rust toolchain: https://rustup.rs  (проверено на 1.100, target x86_64-pc-windows-gnu)
-# WiX 5: https://wixtoolset.org
+# WiX 5: https://wixtoolset.org  + wix extension add -g WixToolset.UI.wixext/5.0.2
 cd GameOverlay
 cargo build --release
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-`build.ps1` собирает release-бинарь, генерирует иконку, упаковывает её в
-`installer\stage\` и собирает MSI через WiX; на выходе в `dist\` появляются
-`GameOverlay-1.0.0-x64.msi`, `GameOverlay-1.0.0-portable.zip` и `GameOverlay.exe`.
+`build.ps1` собирает release-бинарь, кладёт его вместе с иконкой и лицензией в
+`installer\stage\` и собирает MSI через WiX с мастером установки; на выходе в
+`dist\` появляются `GameOverlay-1.1.0-x64.msi`, `GameOverlay-1.1.0-portable.zip`
+и `GameOverlay.exe`.
 
 ## Структура
 
 ```
-src/main.rs      CLI, потоки замера, скрытие консоли
-src/overlay.rs   окно оверлея, отрисовка, горячие клавиши, измерение FPS
-src/ping.rs      ICMP (raw-сокет) и TCP-замер пинга
-installer/       WiX-исходник установщика, иконка, README для пользователя
-build.ps1        сборка exe + MSI + portable-архива
+src/main.rs       CLI, потоки замера, скрытие консоли
+src/overlay.rs    окно, отрисовка GDI+, бойкиссер, график, горячие клавиши, FPS
+src/ping.rs       ICMP (raw-сокет) и TCP-замер пинга
+src/autostart.rs  автозапуск через HKCU Run
+installer/        WiX-исходник установщика, иконка, лицензия, README
+build.ps1         сборка exe + MSI + portable-архива
 ```
 
 ## Лицензия
