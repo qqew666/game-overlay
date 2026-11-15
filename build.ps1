@@ -5,7 +5,7 @@ $ErrorActionPreference = "Stop"
 
 $root = $PSScriptRoot
 if (-not $root) { $root = (Get-Location).Path }
-$version = "1.1.0"
+$version = "1.4.0"
 $env:PATH = "$env:USERPROFILE\.cargo\bin;$env:PATH"
 
 Push-Location $root

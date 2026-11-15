@@ -1,32 +1,34 @@
-//! GameOverlay - a small always-on-top overlay that shows the current FPS and
-//! the ping (round trip time) to a chosen server while you are in a game.
+//! GameOverlay — FPS and ping overlay for games.
+//!
+//! The binary is a Windows GUI app: launching it opens the control panel and
+//! puts the card on top of the active window. There is no console; `--verbose`
+//! writes `%LOCALAPPDATA%\GameOverlay\overlay.log` instead.
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod autostart;
+mod draw;
+mod fps;
+mod log;
 mod overlay;
 mod ping;
+mod settings;
+mod state;
+mod update;
+mod ui;
+
+/// Версия, которую приложение сравнивает с тегом последнего релиза.
+pub const APP_VERSION: &str = "1.4.0";
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
-use overlay::AppState;
 use ping::{PingMode, Target};
-
-/// Hides the console window so the overlay does not steal focus on launch.
-/// Keeps it visible in `--verbose` mode so the measurements can be read.
-fn hide_console() {
-    use windows::Win32::System::Console::GetConsoleWindow;
-    use windows::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
-    unsafe {
-        let console = GetConsoleWindow();
-        if !console.is_invalid() {
-            let _ = ShowWindow(console, SW_HIDE);
-        }
-    }
-}
+use state::AppState;
 
 fn print_help() {
-    println!(
-        r#"GameOverlay 1.1 - FPS & ping overlay for games
+    crate::vlog!(
+        r#"GameOverlay 1.4 - FPS & ping overlay for games
 
 USAGE:
     GameOverlay [OPTIONS]
@@ -39,8 +41,9 @@ OPTIONS:
     --fixed-position     Do not follow the game window, stay in the corner
     --autostart          Register the overlay in HKCU Run, then start
     --no-autostart       Remove the HKCU Run entry, then start
-    --autostart-status   Print whether autostart is registered and exit
-    --verbose            Print measured FPS / ping to the console
+    --autostart-status   Log whether autostart is registered and exit
+    --tray-quiet         Start without showing the control panel
+    --verbose            Write measurements to overlay.log
     -h, --help           Show this help
 
 HOTKEYS:
@@ -48,7 +51,7 @@ HOTKEYS:
     F2 / F3   next / previous ping target
     F4        toggle "follow the game window" positioning
     F6        toggle autostart (HKCU Run entry)
-    End       quit the overlay
+    End       quit
 "#
     );
 }
@@ -59,6 +62,7 @@ struct Options {
     verbose: bool,
     autostart: Option<bool>,
     autostart_status: bool,
+    tray_quiet: bool,
 }
 
 fn parse_args() -> Result<Options, String> {
@@ -71,11 +75,14 @@ fn parse_args() -> Result<Options, String> {
     let mut verbose = false;
     let mut autostart_flag: Option<bool> = None;
     let mut autostart_status = false;
+    let mut tray_quiet = false;
 
     let mut i = 0;
     while i < args.len() {
         match args[i].as_str() {
             "-h" | "--help" => {
+                // The log is the only sink in a GUI build; initialise it first.
+                log::init(true);
                 print_help();
                 std::process::exit(0);
             }
@@ -121,8 +128,9 @@ fn parse_args() -> Result<Options, String> {
             "--autostart" => autostart_flag = Some(true),
             "--no-autostart" => autostart_flag = Some(false),
             "--autostart-status" => autostart_status = true,
-            // Accepted and ignored: the autostart entry launches with it.
-            "--tray-quiet" => {}
+            "--tray-quiet" => tray_quiet = true,
+            // Accepted and ignored: kept so old shortcuts keep working.
+            "--elevated" | "--panel" => {}
             other => return Err(format!("unknown option: {other}")),
         }
         i += 1;
@@ -135,6 +143,7 @@ fn parse_args() -> Result<Options, String> {
         verbose,
         autostart: autostart_flag,
         autostart_status,
+        tray_quiet,
     })
 }
 
@@ -142,42 +151,42 @@ fn main() {
     let opts = match parse_args() {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("error: {e}\n");
+            log::init(true);
+            crate::vlog!("error: {e}");
             print_help();
             std::process::exit(1);
         }
     };
 
+    log::init(opts.verbose);
+
     if opts.autostart_status {
-        println!(
+        crate::vlog!(
             "autostart: {}",
             if autostart::is_enabled() { "enabled" } else { "disabled" }
         );
-        return;
+        if !opts.verbose {
+            return;
+        }
     }
 
     if let Some(enable) = opts.autostart {
         let result = if enable { autostart::enable() } else { autostart::disable() };
         match result {
-            Ok(()) => println!(
-                "autostart {}",
-                if enable { "enabled" } else { "disabled" }
-            ),
-            Err(e) if opts.verbose => eprintln!("autostart failed: {e}"),
-            Err(_) => {}
+            Ok(()) => crate::vlog!("autostart {}", if enable { "enabled" } else { "disabled" }),
+            Err(e) => crate::vlog!("autostart failed: {e}"),
         }
     }
 
-    let state = AppState::new();
+    let state = AppState::new(opts.targets.clone());
     state.follow_window.store(!opts.fixed, Ordering::Relaxed);
     state.verbose.store(opts.verbose, Ordering::Relaxed);
     state.autostart.store(autostart::is_enabled(), Ordering::Relaxed);
+    state
+        .overlay_scale
+        .store(settings::load_scale(), Ordering::Relaxed);
 
-    if !opts.verbose {
-        hide_console();
-    }
-
-    // ping worker
+    // Ping worker.
     {
         let state = state.clone();
         let targets = opts.targets.clone();
@@ -187,6 +196,9 @@ fn main() {
                 if state.should_quit.load(Ordering::Relaxed) {
                     break;
                 }
+                if targets.is_empty() {
+                    break;
+                }
                 let idx = state.target_index.load(Ordering::Relaxed) % targets.len();
                 let target = &targets[idx];
 
@@ -194,15 +206,14 @@ fn main() {
                     *name = target.label();
                 }
 
-                let result = ping::probe(target, Duration::from_millis(1500));
-                match result.rtt_ms {
+                match ping::probe(target, Duration::from_millis(1500)).rtt_ms {
                     Some(ms) => {
                         let deci = (ms * 10.0).round() as i32;
                         state.ping_deci.store(deci, Ordering::Relaxed);
                         state.ping_lost.store(false, Ordering::Relaxed);
                         state.push_ping_sample(deci);
                         if verbose {
-                            println!("[ping] {} -> {:.1} ms", target.label(), ms);
+                            crate::vlog!("[ping] {} -> {:.1} ms", target.label(), ms);
                         }
                     }
                     None => {
@@ -210,7 +221,7 @@ fn main() {
                         state.ping_lost.store(true, Ordering::Relaxed);
                         state.push_ping_sample(-1);
                         if verbose {
-                            println!("[ping] {} -> timeout", target.label());
+                            crate::vlog!("[ping] {} -> timeout", target.label());
                         }
                     }
                 }
@@ -219,21 +230,24 @@ fn main() {
         });
     }
 
-    // fps worker
+    // Frame rate of the foreground window.
+    fps::start(state.clone());
+
+    // Overlay on its own thread: it owns the hotkeys and the layered window.
     {
         let state = state.clone();
-        std::thread::spawn(move || overlay::fps_thread(state));
+        std::thread::spawn(move || overlay::run_overlay(state));
     }
 
-    println!(
-        "GameOverlay 1.1 started. Targets: {} | autostart: {}",
+    crate::vlog!(
+        "GameOverlay 1.4 started · targets {} · autostart {} · verbose {}",
         opts.targets.len(),
-        if state.autostart.load(Ordering::Relaxed) { "on" } else { "off" }
+        state.autostart.load(Ordering::Relaxed),
+        opts.verbose
     );
-    for (i, t) in opts.targets.iter().enumerate() {
-        println!("  [{}] {}", i, t.label());
-    }
-    println!("F1 hide/show | F2/F3 target | F4 position | F6 autostart | End quit");
 
-    overlay::run_overlay(state);
+    ui::run_panel(state.clone(), opts.tray_quiet);
+
+    state.should_quit.store(true, Ordering::Relaxed);
+    fps::shutdown();
 }
