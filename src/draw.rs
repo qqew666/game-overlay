@@ -26,15 +26,18 @@ pub const fn argb(a: u8, r: u8, g: u8, b: u8) -> u32 {
     ((a as u32) << 24) | ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
 }
 
-pub const C_TEXT: u32 = argb(255, 233, 237, 246);
-pub const C_DIM: u32 = argb(195, 152, 164, 190);
-pub const C_TRACK: u32 = argb(48, 120, 140, 180);
-pub const C_GREEN: u32 = argb(255, 96, 240, 150);
-pub const C_AMBER: u32 = argb(255, 255, 205, 96);
-pub const C_ORANGE: u32 = argb(255, 255, 148, 84);
-pub const C_RED: u32 = argb(255, 255, 92, 122);
-pub const C_CYAN: u32 = argb(255, 62, 226, 255);
-pub const C_MAGENTA: u32 = argb(255, 255, 82, 214);
+pub const C_TEXT: u32 = argb(255, 65, 47, 37);
+pub const C_DIM: u32 = argb(255, 117, 95, 77);
+pub const C_TRACK: u32 = argb(70, 167, 131, 98);
+pub const C_GREEN: u32 = argb(255, 100, 110, 65);
+pub const C_AMBER: u32 = argb(255, 161, 109, 40);
+pub const C_ORANGE: u32 = argb(255, 174, 93, 49);
+pub const C_RED: u32 = argb(255, 166, 65, 60);
+pub const C_ACCENT: u32 = argb(255, 137, 91, 60);
+pub const C_SOFT: u32 = argb(255, 198, 157, 118);
+pub const C_BG: u32 = argb(255, 246, 238, 224);
+pub const C_CARD: u32 = argb(255, 255, 250, 241);
+pub const C_BORDER: u32 = argb(255, 222, 205, 182);
 
 pub const ALIGN_LEFT: i32 = 0;
 pub const ALIGN_CENTER: i32 = 1;
@@ -43,7 +46,7 @@ pub const ALIGN_RIGHT: i32 = 2;
 pub fn fps_color(fps: u32) -> u32 {
     match fps {
         0 => C_DIM,
-        120.. => C_CYAN,
+        120.. => C_ACCENT,
         60..=119 => C_GREEN,
         30..=59 => C_AMBER,
         _ => C_RED,
@@ -59,6 +62,37 @@ pub fn ping_color(ms: i32, lost: bool) -> u32 {
             50..=99 => C_AMBER,
             100..=149 => C_ORANGE,
             _ => C_RED,
+        }
+    }
+}
+
+/// Mimi artwork is compiled into the portable executable.
+pub fn draw_mimi(g: *mut GpGraphics, x: f32, y: f32, size: f32) {
+    static PIXELS: std::sync::OnceLock<(u32, u32, Vec<u8>)> = std::sync::OnceLock::new();
+    let (w, h, pixels) = PIXELS.get_or_init(|| {
+        let image = image::load_from_memory(include_bytes!("../assets/mimi-typh.jpg"))
+            .expect("embedded Mimi artwork must be a valid JPEG")
+            .to_rgba8();
+        let (w, h) = image.dimensions();
+        let mut bytes = image.into_raw();
+        for pixel in bytes.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        (w, h, bytes)
+    });
+    unsafe {
+        let mut bitmap = std::ptr::null_mut();
+        if GdipCreateBitmapFromScan0(
+            *w as i32,
+            *h as i32,
+            (*w * 4) as i32,
+            0x0026200A,
+            Some(pixels.as_ptr()),
+            &mut bitmap,
+        ) == Status(0)
+        {
+            let _ = GdipDrawImageRect(g, bitmap.cast(), x, y, size, size);
+            let _ = GdipDisposeImage(bitmap.cast());
         }
     }
 }
@@ -103,6 +137,10 @@ pub fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> *mut GpPath {
         return p;
     }
     let d = (r * 2.0).min(w.min(h)).max(0.0);
+    if d == 0.0 {
+        unsafe { let _ = GdipAddPathRectangle(p, x, y, w, h); }
+        return p;
+    }
     unsafe {
         let _ = GdipAddPathArc(p, x, y, d, d, 180.0, 90.0);
         let _ = GdipAddPathArc(p, x + w - d, y, d, d, 270.0, 90.0);
@@ -154,7 +192,10 @@ pub fn polygon(points: &[(f32, f32)]) -> *mut GpPath {
     if p.is_null() || points.is_empty() {
         return p;
     }
-    let pts: Vec<PointF> = points.iter().map(|(x, y)| PointF { X: *x, Y: *y }).collect();
+    let pts: Vec<PointF> = points
+        .iter()
+        .map(|(x, y)| PointF { X: *x, Y: *y })
+        .collect();
     unsafe {
         let _ = GdipAddPathPolygon(p, pts.as_ptr(), pts.len() as i32);
     }
@@ -235,7 +276,11 @@ pub fn text_in(
     unsafe {
         let wanted: Vec<u16> = format!("{family_name}\0").encode_utf16().collect();
         let mut family: *mut GpFontFamily = std::ptr::null_mut();
-        let mut status = GdipCreateFontFamilyFromName(PCWSTR(wanted.as_ptr()), std::ptr::null_mut(), &mut family);
+        let mut status = GdipCreateFontFamilyFromName(
+            PCWSTR(wanted.as_ptr()),
+            std::ptr::null_mut(),
+            &mut family,
+        );
         if status != Status(0) {
             let fallback: Vec<u16> = "Segoe UI\0".encode_utf16().collect();
             status = GdipCreateFontFamilyFromName(
@@ -245,8 +290,9 @@ pub fn text_in(
             );
         }
         if status != Status(0) {
-            return;
+            status = GdipGetGenericFontFamilySansSerif(&mut family);
         }
+        if status != Status(0) { return; }
 
         let style = if bold { 1 } else { 0 };
         let mut font: *mut GpFont = std::ptr::null_mut();
@@ -266,7 +312,12 @@ pub fn text_in(
             let _ = GdipSetStringFormatTrimming(fmt, StringTrimmingEllipsisCharacter);
         }
 
-        let layout = RectF { X: x, Y: y, Width: w, Height: h };
+        let layout = RectF {
+            X: x,
+            Y: y,
+            Width: w,
+            Height: h,
+        };
         let mut buf: Vec<u16> = s.encode_utf16().collect();
 
         if !brush.is_null() {
@@ -290,96 +341,6 @@ pub fn text_in(
         let _ = GdipDeleteFont(font);
         let _ = GdipDeleteFontFamily(family);
     }
-}
-
-// ---------------------------------------------------------------------------
-// Transforms
-// ---------------------------------------------------------------------------
-
-/// Rotates the following drawing by `degrees` around `(cx, cy)`.
-pub fn push_rotation(g: *mut GpGraphics, degrees: f32, cx: f32, cy: f32) {
-    unsafe {
-        let _ = GdipTranslateWorldTransform(g, cx, cy, MatrixOrderAppend);
-        let _ = GdipRotateWorldTransform(g, degrees, MatrixOrderAppend);
-        let _ = GdipTranslateWorldTransform(g, -cx, -cy, MatrixOrderAppend);
-    }
-}
-
-pub fn reset_transform(g: *mut GpGraphics) {
-    unsafe {
-        let _ = GdipResetWorldTransform(g);
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Boykisser
-// ---------------------------------------------------------------------------
-
-/// Vector boykisser: white cat head, black outline, ":3" mouth, pink blush.
-pub fn draw_boykisser(g: *mut GpGraphics, cx: f32, cy: f32, size: f32) {
-    let s = size;
-    let white = argb(255, 250, 250, 253);
-    let ink = argb(255, 26, 28, 36);
-    let blush = argb(190, 255, 128, 176);
-
-    let head_w = s * 0.88;
-    let head_h = s * 0.68;
-    let hx = cx - head_w / 2.0;
-    let hy = cy - head_h / 2.0 + s * 0.08;
-
-    // Ears first, so the head outline overlaps their base.
-    let left_ear = polygon(&[
-        (cx - s * 0.36, hy + s * 0.16),
-        (cx - s * 0.31, hy - s * 0.24),
-        (cx - s * 0.07, hy + s * 0.02),
-    ]);
-    let right_ear = polygon(&[
-        (cx + s * 0.36, hy + s * 0.16),
-        (cx + s * 0.31, hy - s * 0.24),
-        (cx + s * 0.07, hy + s * 0.02),
-    ]);
-    for ear in [left_ear, right_ear] {
-        fill(g, ear, white);
-        stroke(g, ear, ink, 2.0);
-        path_free(ear);
-    }
-
-    let head = ellipse_path(hx, hy, head_w, head_h);
-    fill(g, head, white);
-    stroke(g, head, ink, 2.2);
-
-    // Eyes.
-    for dx in [-1.0f32, 1.0] {
-        let eye = ellipse_path(cx + dx * s * 0.16 - s * 0.045, cy - s * 0.04, s * 0.09, s * 0.13);
-        fill(g, eye, ink);
-        path_free(eye);
-    }
-
-    // Blush.
-    for dx in [-1.0f32, 1.0] {
-        let b = ellipse_path(cx + dx * s * 0.26 - s * 0.07, cy + s * 0.06, s * 0.14, s * 0.07);
-        fill(g, b, blush);
-        path_free(b);
-    }
-
-    // The ":3" mouth: two bottom-half arcs side by side.
-    let mouth = path();
-    if !mouth.is_null() {
-        unsafe {
-            let _ = GdipAddPathArc(mouth, cx - s * 0.13, cy + s * 0.10, s * 0.13, s * 0.11, 0.0, 180.0);
-            let _ = GdipAddPathArc(mouth, cx + s * 0.00, cy + s * 0.10, s * 0.13, s * 0.11, 0.0, 180.0);
-        }
-        stroke(g, mouth, ink, 1.8);
-        path_free(mouth);
-    }
-
-    // Whiskers.
-    for (ay, by) in [(-0.02f32, -0.10f32), (0.04, 0.02)] {
-        line(g, cx - s * 0.44, cy + s * ay, cx - s * 0.56, cy + s * by, ink, 1.4);
-        line(g, cx + s * 0.44, cy + s * ay, cx + s * 0.56, cy + s * by, ink, 1.4);
-    }
-
-    path_free(head);
 }
 
 // ---------------------------------------------------------------------------
@@ -420,7 +381,8 @@ impl Surface {
         bmi.bmiHeader.biCompression = BI_RGB.0;
 
         let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
-        let bmp = match CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE::default(), 0) {
+        let bmp = match CreateDIBSection(mem, &bmi, DIB_RGB_COLORS, &mut bits, HANDLE::default(), 0)
+        {
             Ok(b) => b,
             Err(_) => {
                 let _ = DeleteDC(mem);

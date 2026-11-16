@@ -16,8 +16,8 @@ pub struct Release {
     pub version: String,
     /// Ссылка на установщик MSI, если он приложен к релизу.
     pub msi_url: Option<String>,
-    /// Ссылка на portable ZIP, если он приложен к релизу.
-    pub zip_url: Option<String>,
+    /// Ссылка на отдельный portable EXE, если он приложен к релизу.
+    pub exe_url: Option<String>,
 }
 
 fn client() -> Result<reqwest::blocking::Client, String> {
@@ -77,6 +77,8 @@ pub fn check() -> Result<Release, String> {
         .header("Accept", "application/vnd.github+json")
         .send()
         .map_err(|e| format!("запрос: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("GitHub: {e}"))?
         .text()
         .map_err(|e| format!("чтение: {e}"))?;
 
@@ -86,20 +88,20 @@ pub fn check() -> Result<Release, String> {
         .ok_or_else(|| "в ответе нет tag_name".to_string())?;
 
     let mut msi_url = None;
-    let mut zip_url = None;
+    let mut exe_url = None;
     for url in string_values(&body, "\"browser_download_url\"") {
         let lower = url.to_ascii_lowercase();
         if lower.ends_with(".msi") && msi_url.is_none() {
             msi_url = Some(url);
-        } else if lower.ends_with(".zip") && zip_url.is_none() {
-            zip_url = Some(url);
+        } else if lower.ends_with(".exe") && exe_url.is_none() {
+            exe_url = Some(url);
         }
     }
 
     Ok(Release {
         version,
         msi_url,
-        zip_url,
+        exe_url,
     })
 }
 
@@ -110,9 +112,19 @@ pub fn download(url: &str) -> Result<PathBuf, String> {
     let name = url.rsplit('/').next().unwrap_or("update.bin");
     let safe: String = name
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
-    let path = dir.join(if safe.is_empty() { "update.bin".to_string() } else { safe });
+    let path = dir.join(if safe.is_empty() {
+        "update.bin".to_string()
+    } else {
+        safe
+    });
 
     let mut response = client()?
         .get(url)
@@ -140,6 +152,12 @@ pub fn launch_installer(path: &str) -> bool {
             .arg("/passive")
             .spawn()
             .is_ok()
+    } else if std::path::Path::new(path)
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false)
+    {
+        std::process::Command::new(path).spawn().is_ok()
     } else {
         std::process::Command::new("explorer")
             .arg(path)
