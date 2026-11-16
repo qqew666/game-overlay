@@ -1,0 +1,2 @@
+ba619ae516952691bc761197a3cafafa298a0abc43396290e1fcc8e65ac7a371  GameOverlay.exe
+cc9600fb026936f192ccb4dde3a40ffbe669cc5b7bce80733c133fdf1d1baa79  GameOverlay-1.5.0-sources.zip
