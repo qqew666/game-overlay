@@ -16,9 +16,10 @@ mod settings;
 mod state;
 mod update;
 mod ui;
+mod layout;
 
 /// Версия, которую приложение сравнивает с тегом последнего релиза.
-pub const APP_VERSION: &str = "1.4.0";
+pub const APP_VERSION: &str = "1.5.0";
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -28,7 +29,7 @@ use state::AppState;
 
 fn print_help() {
     crate::vlog!(
-        r#"GameOverlay 1.4 - FPS & ping overlay for games
+        r#"GameOverlay 1.5 - FPS & ping overlay for games
 
 USAGE:
     GameOverlay [OPTIONS]
@@ -240,7 +241,7 @@ fn main() {
     }
 
     crate::vlog!(
-        "GameOverlay 1.4 started · targets {} · autostart {} · verbose {}",
+        "GameOverlay 1.5 started · targets {} · autostart {} · verbose {}",
         opts.targets.len(),
         state.autostart.load(Ordering::Relaxed),
         opts.verbose

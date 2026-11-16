@@ -1,6 +1,6 @@
 [package]
 name = "game-overlay"
-version = "1.4.0"
+version = "1.5.0"
 edition = "2021"
 description = "Overlay that shows FPS and ping over games"
 license = "MIT"
@@ -10,7 +10,8 @@ name = "GameOverlay"
 path = "src/main.rs"
 
 [dependencies]
-reqwest = { version = "0.13.5", features = ["blocking"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["blocking", "native-tls"] }
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Dwm",
