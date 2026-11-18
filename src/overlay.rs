@@ -10,7 +10,8 @@ use std::sync::Arc;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, AC_SRC_ALPHA, BLENDFUNCTION, HDC, PAINTSTRUCT,
+    BeginPaint, EndPaint, GetMonitorInfoW, MonitorFromWindow, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, AC_SRC_ALPHA, BLENDFUNCTION, HDC, PAINTSTRUCT,
 };
 use windows::Win32::Graphics::GdiPlus::{
     GdipCreateFromHDC, GdipDeleteGraphics, GdipScaleWorldTransform, GdipSetSmoothingMode,
@@ -19,7 +20,7 @@ use windows::Win32::Graphics::GdiPlus::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, MOD_NOREPEAT, VK_END, VK_F1, VK_F2, VK_F3, VK_F4, VK_F6,
+    RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT, VK_END, VK_F1, VK_F2, VK_F3, VK_F4, VK_F6,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -60,7 +61,10 @@ fn window_size(st: &AppState) -> (i32, i32) {
 
 fn short(s: &str, max: usize) -> String {
     if s.chars().count() > max {
-        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+        format!(
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
     } else {
         s.to_string()
     }
@@ -84,13 +88,23 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
     let _ = unsafe { GdipSetTextRenderingHint(g, TextRenderingHintAntiAliasGridFit) };
     // Everything below is laid out in the designed 420x210 space; scaling the
     // world transform grows the card and its type together.
-    let _ = unsafe { GdipScaleWorldTransform(g, current_scale(st), current_scale(st), MatrixOrderAppend) };
+    let _ = unsafe {
+        GdipScaleWorldTransform(g, current_scale(st), current_scale(st), MatrixOrderAppend)
+    };
 
     let ox = SHADOW;
     let oy = SHADOW;
 
     // Drop shadow: two stacked rounded rects, wider and softer at the back.
-    draw::round_fill(g, ox - 1.0, oy + 5.0, CARD_W + 2.0, CARD_H, RADIUS + 2.0, argb(46, 0, 0, 0));
+    draw::round_fill(
+        g,
+        ox - 1.0,
+        oy + 5.0,
+        CARD_W + 2.0,
+        CARD_H,
+        RADIUS + 2.0,
+        argb(46, 0, 0, 0),
+    );
     draw::round_fill(g, ox, oy + 2.0, CARD_W, CARD_H, RADIUS, argb(72, 0, 0, 0));
 
     // Card.
@@ -101,24 +115,28 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
         CARD_W,
         CARD_H,
         RADIUS,
-        argb(243, 13, 15, 23),
-        argb(70, 96, 112, 148),
+        argb(248, 246, 238, 224),
+        draw::C_BORDER,
     );
 
     // Accent rail on the left edge: cyan over magenta.
     // The two halves overlap by 4 px so the joint reads as one bar.
-    draw::round_fill(g, ox + 10.0, oy + 20.0, 5.0, 70.0, 2.5, draw::C_CYAN);
-    draw::round_fill(g, ox + 10.0, oy + 86.0, 5.0, 70.0, 2.5, draw::C_MAGENTA);
+    draw::round_fill(g, ox + 10.0, oy + 20.0, 5.0, 70.0, 2.5, draw::C_ACCENT);
+    draw::round_fill(g, ox + 10.0, oy + 86.0, 5.0, 70.0, 2.5, draw::C_SOFT);
 
     let fps = st.fps.load(Ordering::Relaxed);
     let ft = st.frametime_centi_ms.load(Ordering::Relaxed);
     let ping_deci = st.ping_deci.load(Ordering::Relaxed);
-    let ping = if ping_deci < 0 { -1 } else { (ping_deci + 5) / 10 };
+    let ping = if ping_deci < 0 {
+        -1
+    } else {
+        (ping_deci + 5) / 10
+    };
     let lost = st.ping_lost.load(Ordering::Relaxed);
     let exact = st.fps_source.load(Ordering::Relaxed) == SOURCE_ETW;
 
     // Header: boykisser on the left, game name, FPS source underneath.
-    draw::draw_boykisser(g, ox + 48.0, oy + 42.0, 54.0);
+    draw::draw_mimi(g, ox + 25.0, oy + 12.0, 48.0);
 
     let game = st.game_name_string();
     let title = if game.is_empty() {
@@ -126,13 +144,35 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
     } else {
         short(&game, 24)
     };
-    draw::text(g, &title, 14.0, true, draw::C_TEXT, ox + 84.0, oy + 16.0, 220.0, 20.0, draw::ALIGN_LEFT);
+    draw::text(
+        g,
+        &title,
+        14.0,
+        true,
+        draw::C_TEXT,
+        ox + 84.0,
+        oy + 16.0,
+        220.0,
+        20.0,
+        draw::ALIGN_LEFT,
+    );
     let source = if exact {
-        "mimi(typh) · точный FPS".to_string()
+        "точный FPS".to_string()
     } else {
-        "mimi(typh) · базовый FPS".to_string()
+        "базовый FPS".to_string()
     };
-    draw::text(g, &source, 9.5, false, draw::C_DIM, ox + 84.0, oy + 38.0, 220.0, 14.0, draw::ALIGN_LEFT);
+    draw::text(
+        g,
+        &source,
+        9.5,
+        false,
+        draw::C_DIM,
+        ox + 84.0,
+        oy + 38.0,
+        220.0,
+        14.0,
+        draw::ALIGN_LEFT,
+    );
 
     // Separator under the header.
     draw::line(
@@ -141,26 +181,82 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
         oy + 70.0,
         ox + CARD_W - 24.0,
         oy + 70.0,
-        argb(40, 120, 140, 180),
+        argb(40, 167, 131, 98),
         1.0,
     );
 
     // FPS column.
-    draw::text(g, "FPS", 9.0, true, draw::C_DIM, ox + 30.0, oy + 78.0, 90.0, 12.0, draw::ALIGN_LEFT);
-    let fps_value = if fps == 0 { "--".to_string() } else { fps.to_string() };
-    draw::text(g, &fps_value, 44.0, true, draw::fps_color(fps), ox + 28.0, oy + 90.0, 150.0, 52.0, draw::ALIGN_LEFT);
+    draw::text(
+        g,
+        "FPS",
+        9.0,
+        true,
+        draw::C_DIM,
+        ox + 30.0,
+        oy + 78.0,
+        90.0,
+        12.0,
+        draw::ALIGN_LEFT,
+    );
+    let fps_value = if fps == 0 {
+        "--".to_string()
+    } else {
+        fps.to_string()
+    };
+    draw::text(
+        g,
+        &fps_value,
+        44.0,
+        true,
+        draw::fps_color(fps),
+        ox + 28.0,
+        oy + 90.0,
+        150.0,
+        52.0,
+        draw::ALIGN_LEFT,
+    );
     let ft_text = if fps == 0 {
         "ожидание кадра".to_string()
     } else {
         format!("{:.1} ms кадр", ft as f32 / 100.0)
     };
-    draw::text(g, &ft_text, 10.0, false, draw::C_DIM, ox + 30.0, oy + 146.0, 150.0, 14.0, draw::ALIGN_LEFT);
+    draw::text(
+        g,
+        &ft_text,
+        10.0,
+        false,
+        draw::C_DIM,
+        ox + 30.0,
+        oy + 146.0,
+        150.0,
+        14.0,
+        draw::ALIGN_LEFT,
+    );
 
     // Divider between the two readings.
-    draw::line(g, ox + 196.0, oy + 78.0, ox + 196.0, oy + 160.0, argb(34, 120, 140, 180), 1.0);
+    draw::line(
+        g,
+        ox + 196.0,
+        oy + 78.0,
+        ox + 196.0,
+        oy + 160.0,
+        argb(34, 167, 131, 98),
+        1.0,
+    );
 
     // Ping column.
-    draw::text(g, "PING", 9.0, true, draw::C_DIM, ox + 216.0, oy + 78.0, 90.0, 12.0, draw::ALIGN_LEFT);
+    draw::text(
+        g,
+        "PING",
+        9.0,
+        true,
+        draw::C_DIM,
+        ox + 216.0,
+        oy + 78.0,
+        90.0,
+        12.0,
+        draw::ALIGN_LEFT,
+    );
     // Sub-10 ms values keep one decimal: a single digit is what a good route
     // to a game server looks like, and rounding it to "0" hides the difference.
     let ping_value = if lost || ping_deci < 0 {
@@ -171,11 +267,44 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
         format!("{ping}")
     };
     let ping_tone = draw::ping_color(ping, lost);
-    draw::text(g, &ping_value, 38.0, true, ping_tone, ox + 216.0, oy + 90.0, 118.0, 50.0, draw::ALIGN_RIGHT);
-    draw::text(g, "ms", 11.0, false, ping_tone, ox + 340.0, oy + 108.0, 30.0, 14.0, draw::ALIGN_LEFT);
+    draw::text(
+        g,
+        &ping_value,
+        38.0,
+        true,
+        ping_tone,
+        ox + 216.0,
+        oy + 90.0,
+        118.0,
+        50.0,
+        draw::ALIGN_RIGHT,
+    );
+    draw::text(
+        g,
+        "ms",
+        11.0,
+        false,
+        ping_tone,
+        ox + 340.0,
+        oy + 108.0,
+        30.0,
+        14.0,
+        draw::ALIGN_LEFT,
+    );
 
     let target = st.target_name.lock().map(|t| t.clone()).unwrap_or_default();
-    draw::text(g, &short(&target, 18), 9.5, false, draw::C_DIM, ox + 216.0, oy + 146.0, 160.0, 14.0, draw::ALIGN_LEFT);
+    draw::text(
+        g,
+        &short(&target, 18),
+        9.5,
+        false,
+        draw::C_DIM,
+        ox + 216.0,
+        oy + 146.0,
+        160.0,
+        14.0,
+        draw::ALIGN_LEFT,
+    );
 
     // Ping graph across the bottom.
     let samples: Vec<i32> = st.history.lock().map(|h| h.clone()).unwrap_or_default();
@@ -184,10 +313,22 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
     let graph_y = oy + 166.0;
     let graph_h = 14.0;
 
-    draw::round_fill(g, graph_x, graph_y + graph_h - 1.0, graph_w, 1.0, 0.5, draw::C_TRACK);
+    draw::round_fill(
+        g,
+        graph_x,
+        graph_y + graph_h - 1.0,
+        graph_w,
+        1.0,
+        0.5,
+        draw::C_TRACK,
+    );
 
     if samples.len() >= 2 {
-        let valid: Vec<f32> = samples.iter().filter(|v| **v >= 0).map(|v| *v as f32 / 10.0).collect();
+        let valid: Vec<f32> = samples
+            .iter()
+            .filter(|v| **v >= 0)
+            .map(|v| *v as f32 / 10.0)
+            .collect();
         if valid.len() >= 2 {
             let max = valid.iter().cloned().fold(1.0f32, f32::max).max(30.0);
             let step = graph_w / (samples.len().saturating_sub(1)).max(1) as f32;
@@ -204,7 +345,7 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
             area.push((graph_x + graph_w, graph_y + graph_h));
             area.push((graph_x, graph_y + graph_h));
             let poly = draw::polygon(&area);
-            draw::fill(g, poly, argb(38, 120, 220, 200));
+            draw::fill(g, poly, argb(38, 167, 131, 98));
             draw::path_free(poly);
 
             let line = draw::polygon(&points);
@@ -233,14 +374,14 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
                     168.0,
                     24.0,
                     12.0,
-                    argb(alpha.saturating_sub(40), 46, 52, 70),
+                    argb(alpha.saturating_sub(40), 230, 210, 184),
                 );
                 draw::text(
                     g,
                     msg,
                     10.0,
                     true,
-                    argb(alpha, 236, 240, 248),
+                    argb(alpha, 65, 47, 37),
                     ox + CARD_W - 184.0,
                     oy + 15.0,
                     168.0,
@@ -258,7 +399,10 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
 
         let (x, y) = st.pos.lock().map(|p| *p).unwrap_or((0, 0));
         let dst = POINT { x, y };
-        let size = SIZE { cx: win_w, cy: win_h };
+        let size = SIZE {
+            cx: win_w,
+            cy: win_h,
+        };
         let src = POINT { x: 0, y: 0 };
         let blend = BLENDFUNCTION {
             BlendOp: 0,
@@ -279,7 +423,10 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
             ULW_ALPHA,
         );
         if placed.is_err() {
-            crate::vlog!("[overlay] UpdateLayeredWindow at {x},{y} failed: {:?}", placed);
+            crate::vlog!(
+                "[overlay] UpdateLayeredWindow at {x},{y} failed: {:?}",
+                placed
+            );
         }
     }
 }
@@ -303,7 +450,12 @@ unsafe fn state_of(hwnd: HWND) -> Option<&'static AppState> {
     }
 }
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_PAINT => {
             unsafe {
@@ -331,8 +483,11 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         let _ = ShowWindow(hwnd, SW_HIDE);
                     }
                     if want {
-                        position_overlay(hwnd, st);
-                        render(hwnd, st);
+                        if wparam.0 == 1 {
+                            position_overlay(hwnd, st, false);
+                        } else {
+                            render(hwnd, st);
+                        }
                     }
                 }
             }
@@ -345,14 +500,22 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
                         1 => {
                             let v = !st.visible.load(Ordering::Relaxed);
                             st.visible.store(v, Ordering::Relaxed);
-                            st.set_notice(if v { "оверлей: вкл" } else { "оверлей: выкл" });
+                            st.set_notice(if v {
+                                "оверлей: вкл"
+                            } else {
+                                "оверлей: выкл"
+                            });
                         }
                         2 => st.cycle_target(1),
                         3 => st.cycle_target(-1),
                         4 => {
                             let v = !st.follow_window.load(Ordering::Relaxed);
                             st.follow_window.store(v, Ordering::Relaxed);
-                            st.set_notice(if v { "слежение: вкл" } else { "слежение: выкл" });
+                            st.set_notice(if v {
+                                "слежение: вкл"
+                            } else {
+                                "слежение: выкл"
+                            });
                         }
                         5 => st.should_quit.store(true, Ordering::Relaxed),
                         6 => match crate::autostart::toggle() {
@@ -375,6 +538,15 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
         WM_ERASEBKGND => LRESULT(1),
         WM_DESTROY => {
+            let _ = KillTimer(hwnd, 1);
+            let _ = KillTimer(hwnd, 2);
+            for id in 1..=6 { let _ = UnregisterHotKey(hwnd, id); }
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppState;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            if !ptr.is_null() {
+                let state = Arc::from_raw(ptr);
+                state.overlay_hwnd.store(0, Ordering::Relaxed);
+            }
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
@@ -382,42 +554,50 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
     }
 }
 
-unsafe fn position_overlay(hwnd: HWND, st: &AppState) {
-    let (win_w, win_h) = window_size(st);
-    let screen_w = GetSystemMetrics(SM_CXSCREEN);
-    // Default corner: top right. Following a window overrides it below.
-    let mut pos = (screen_w - win_w - 20, 20);
+thread_local! {
+    static MOTION: std::cell::RefCell<(crate::movement::Motion, std::time::Instant)> =
+        std::cell::RefCell::new((crate::movement::Motion::default(), std::time::Instant::now()));
+}
 
-    if st.follow_window.load(Ordering::Relaxed) {
-        let fg = GetForegroundWindow();
-        if !fg.is_invalid() && fg != hwnd {
-            let mut r = windows::Win32::Foundation::RECT::default();
-            if GetWindowRect(fg, &mut r).is_ok() {
-                pos = (r.left + 20, r.top + 20);
+unsafe fn position_overlay(hwnd: HWND, st: &AppState, snap: bool) {
+    let size = window_size(st);
+    let foreground = GetForegroundWindow();
+    let panel = HWND(st.panel_hwnd.load(Ordering::Relaxed) as *mut _);
+    let following = st.follow_window.load(Ordering::Relaxed);
+    let own_window = foreground == panel || foreground == hwnd;
+    let anchor = if following && !foreground.is_invalid() && !own_window
+        && !IsIconic(foreground).as_bool() { foreground } else { hwnd };
+    let mut monitor = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    if !GetMonitorInfoW(MonitorFromWindow(anchor, MONITOR_DEFAULTTONEAREST), &mut monitor).as_bool() {
+        return;
+    }
+    let work = monitor.rcWork;
+    let area = (work.left, work.top, work.right, work.bottom);
+    let mut target = (work.right - size.0 - 20, work.top + 20);
+    if following {
+        if anchor == foreground && !own_window {
+            let mut rect = windows::Win32::Foundation::RECT::default();
+            if GetWindowRect(foreground, &mut rect).is_ok() {
+                target = (rect.left + 20, rect.top + 20);
             }
+        } else if let Ok(position) = st.pos.lock() {
+            target = *position;
         }
     }
-
-    if pos.0 < 0 || pos.0 > screen_w - win_w {
-        pos.0 = screen_w - win_w - 20;
-    }
-    if pos.1 < 0 {
-        pos.1 = 20;
-    }
-
-    if let Ok(mut p) = st.pos.lock() {
-        *p = pos;
-    }
-
-    let _ = SetWindowPos(
-        hwnd,
-        HWND_TOPMOST,
-        pos.0,
-        pos.1,
-        win_w,
-        win_h,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW,
-    );
+    target = crate::movement::constrain(target, size, area);
+    let position = MOTION.with(|motion| {
+        let mut motion = motion.borrow_mut();
+        let now = std::time::Instant::now();
+        let seconds = now.duration_since(motion.1).as_secs_f64();
+        motion.1 = now;
+        crate::movement::constrain(motion.0.update(target, seconds, snap), size, area)
+    });
+    if let Ok(mut current) = st.pos.lock() { *current = position; }
+    let mut current = windows::Win32::Foundation::RECT::default();
+    if GetWindowRect(hwnd, &mut current).is_ok() &&
+        (current.left, current.top, current.right-current.left, current.bottom-current.top)
+            == (position.0, position.1, size.0, size.1) { return; }
+    let _ = SetWindowPos(hwnd, HWND_TOPMOST, position.0, position.1, size.0, size.1, SWP_NOACTIVATE);
 }
 
 /// Creates the overlay window and runs its message loop (blocking).
@@ -435,11 +615,8 @@ pub fn run_overlay(state: Arc<AppState>) {
         };
         RegisterClassW(&wc);
 
-        let ex_style = WS_EX_LAYERED
-            | WS_EX_TRANSPARENT
-            | WS_EX_TOPMOST
-            | WS_EX_TOOLWINDOW
-            | WS_EX_NOACTIVATE;
+        let ex_style =
+            WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
 
         let title = wide("GameOverlay");
         let hwnd = match CreateWindowExW(
@@ -482,10 +659,11 @@ pub fn run_overlay(state: Arc<AppState>) {
 
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex_style.0 | WS_EX_LAYERED.0) as isize);
 
-        position_overlay(hwnd, &state);
+        position_overlay(hwnd, &state, true);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         render(hwnd, &state);
-        SetTimer(hwnd, 1, 100, None);
+        SetTimer(hwnd, 1, 16, None);
+        SetTimer(hwnd, 2, 100, None);
 
         let mut msg = MSG::default();
         loop {

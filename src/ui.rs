@@ -1,737 +1,415 @@
-//! Control panel window (no console). Custom-painted 32-bpp DIB per frame,
-//! shared look with the overlay, no widget toolkit.
-
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
-
+//! Warm, accessible control panel. Painting and input share layout.rs geometry.
+use crate::draw::{self, argb, Surface, ALIGN_CENTER, ALIGN_LEFT};
+use crate::layout::{self, Action, Rect, SCALES};
+use crate::state::{
+    AppState, SOURCE_ETW, UPDATE_CHECKING, UPDATE_FAILED, UPDATE_NEWER, UPDATE_NONE, UPDATE_READY,
+};
+use std::sync::{atomic::Ordering, Arc};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM};
 use windows::Win32::Graphics::Dwm::{DwmSetWindowAttribute, DWMWINDOWATTRIBUTE};
 use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
 use windows::Win32::Graphics::GdiPlus::{
-    GdipCreateFromHDC, GdipDeleteGraphics, GdipSetSmoothingMode, GdipSetTextRenderingHint,
-    GpGraphics, RectF, SmoothingModeAntiAlias, Status, TextRenderingHintAntiAliasGridFit,
+    GdipCreateFromHDC, GdipDeleteGraphics, GdipScaleWorldTransform, GdipSetSmoothingMode,
+    GdipSetTextRenderingHint, GpGraphics, MatrixOrderAppend, SmoothingModeAntiAlias, Status,
+    TextRenderingHintAntiAliasGridFit,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    GetKeyState, ReleaseCapture, SetCapture, TrackMouseEvent, TME_LEAVE, TRACKMOUSEEVENT,
+};
 use windows::Win32::UI::Shell::{
     Shell_NotifyIconW, NIF_ICON, NIF_MESSAGE, NIF_TIP, NIM_ADD, NIM_DELETE, NOTIFYICONDATAW,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
-
-use crate::draw::{self, argb, Surface, ALIGN_CENTER, ALIGN_LEFT, ALIGN_RIGHT};
-use crate::state::{
-    AppState, SOURCE_ETW, UPDATE_CHECKING, UPDATE_FAILED, UPDATE_NEWER, UPDATE_NONE, UPDATE_READY,
-};
-
-// ---------------------------------------------------------------------------\n// Layout\n// ---------------------------------------------------------------------------\n
-
-const PANEL_W: i32 = 640;
-const PANEL_H: i32 = 730;
-
+const PANEL_W: i32 = layout::WIDTH;
+const PANEL_H: i32 = layout::HEIGHT;
 const TRAY_MSG: u32 = WM_APP + 1;
+const WM_MOUSELEAVE: u32 = 0x02A3;
 const TIMER_ID: usize = 1;
-
-// Tray menu ids — used with TPM_RETURNCMD so the id comes back directly.
 const CMD_SHOW: usize = 1;
 const CMD_TOGGLE_OVERLAY: usize = 2;
 const CMD_TOGGLE_AUTOSTART: usize = 3;
-const CMD_CHECK_UPDATE: usize = 5;
 const CMD_QUIT: usize = 4;
-
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Action {
-    CheckUpdate,
-
-    ToggleAutostart,
-    ToggleFollow,
-    ToggleOverlay,
-    Target(usize),
-    Scale(u32),
-    Elevate,
-    HideToTray,
-    Quit,
-}
-
+const CMD_CHECK_UPDATE: usize = 5;
 struct PanelCtx {
     state: Arc<AppState>,
     hwnd: HWND,
     hover: Option<Action>,
+    pressed: Option<Action>,
+    focus: Option<Action>,
     tray: bool,
 }
-
-// ---------------------------------------------------------------------------\n// Helpers\n// ---------------------------------------------------------------------------\n
-
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
 }
-
 fn short(s: &str, max: usize) -> String {
     if s.chars().count() > max {
-        format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>())
+        format!("{}…", s.chars().take(max - 1).collect::<String>())
     } else {
-        s.to_string()
+        s.into()
     }
 }
-
-fn row_rect(i: usize) -> RectF {
-    RectF {
-        X: 24.0,
-        Y: 292.0 + i as f32 * 54.0,
-        Width: 592.0,
-        Height: 46.0,
+fn mouse_point(hwnd: HWND, p: LPARAM) -> (f32, f32) {
+    let mut r = RECT::default();
+    unsafe {
+        let _ = GetClientRect(hwnd, &mut r);
     }
+    let scale = (r.right as f32 / PANEL_W as f32)
+        .min(r.bottom as f32 / PANEL_H as f32)
+        .max(0.1);
+    (
+        (p.0 & 0xffff) as i16 as f32 / scale,
+        ((p.0 >> 16) & 0xffff) as i16 as f32 / scale,
+    )
 }
-
-fn toggle_rect(i: usize) -> RectF {
-    let row = row_rect(i);
-    RectF {
-        X: 24.0 + 592.0 - 60.0,
-        Y: row.Y + 12.0,
-        Width: 44.0,
-        Height: 22.0,
-    }
+fn text(g: *mut GpGraphics, s: &str, size: f32, bold: bool, color: u32, r: Rect, align: i32) {
+    draw::text(g, s, size, bold, color, r.x, r.y, r.w, r.h, align);
 }
-
-const SCALES: [u32; 4] = [80, 100, 125, 150];
-
-fn scale_chip_rect(i: usize) -> RectF {
-    RectF {
-        X: 22.0 + i as f32 * 136.0,
-        Y: 456.0,
-        Width: (128 + i * 4) as f32,
-        Height: 40.0,
-    }
+fn card(g: *mut GpGraphics, r: Rect, bg: u32) {
+    draw::round_card(g, r.x, r.y, r.w, r.h, 14., bg, draw::C_BORDER);
 }
-
-fn target_chip_rect(i: usize) -> RectF {
-    RectF {
-        X: 20.0 + i as f32 * 144.0,
-        Y: 530.0,
-        Width: (136 + i * 4) as f32,
-        Height: 40.0,
-    }
-}
-
-fn button_rect(i: usize) -> RectF {
-    match i {
-        0 => RectF { X: 24.0, Y: 620.0, Width: 168.0, Height: 48.0 },
-        1 => RectF { X: 204.0, Y: 620.0, Width: 150.0, Height: 48.0 },
-        2 => RectF { X: 366.0, Y: 620.0, Width: 100.0, Height: 48.0 },
-        _ => RectF { X: 478.0, Y: 620.0, Width: 138.0, Height: 48.0 },
-    }
-}
-
-fn inside(r: &RectF, x: f32, y: f32) -> bool {
-    x >= r.X && x <= r.X + r.Width && y >= r.Y && y <= r.Y + r.Height
-}
-
-fn hit_test(state: &AppState, x: f32, y: f32) -> Option<Action> {
-    for i in 0..3 {
-        if inside(&row_rect(i), x, y) {
-            return Some(match i {
-                0 => Action::ToggleAutostart,
-                1 => Action::ToggleFollow,
-                _ => Action::ToggleOverlay,
-            });
-        }
-    }
-    for (i, pct) in SCALES.iter().enumerate() {
-        if inside(&scale_chip_rect(i), x, y) {
-            return Some(Action::Scale(*pct));
-        }
-    }
-    let count = state.target_count().min(4);
-    for i in 0..count {
-        if inside(&target_chip_rect(i), x, y) {
-            return Some(Action::Target(i));
-        }
-    }
-    for (i, action) in [
-        (0, Action::Elevate),
-        (1, Action::ToggleOverlay),
-        (2, Action::HideToTray),
-        (3, Action::CheckUpdate),
-        (4, Action::Quit),
-    ] {
-        if inside(&button_rect(i), x, y) {
-            return Some(action);
-        }
-    }
-    None
-}
-
-// ---------------------------------------------------------------------------\n// Painting\n// ---------------------------------------------------------------------------\n
-
-unsafe fn paint_text(g: *mut GpGraphics, s: &str, size: f32, bold: bool, color: u32, r: RectF, align: i32) {
-    draw::text(g, s, size, bold, color, r.X, r.Y, r.Width, r.Height, align);
-}
-
-unsafe fn draw_toggle(g: *mut GpGraphics, r: RectF, on: bool, hover: bool) {
-    let track = if on {
-        if hover { argb(255, 92, 240, 255) } else { draw::C_CYAN }
-    } else if hover {
-        argb(255, 58, 64, 84)
+fn control(g: *mut GpGraphics, ctx: &PanelCtx, a: Action, label: &str, selected: bool) {
+    let r = layout::rect(a);
+    let bg = if ctx.pressed == Some(a) {
+        argb(255, 215, 189, 156)
+    } else if selected {
+        argb(255, 232, 210, 181)
+    } else if ctx.hover == Some(a) {
+        argb(255, 239, 225, 204)
     } else {
-        argb(255, 44, 49, 64)
+        draw::C_CARD
     };
-    draw::round_fill(g, r.X, r.Y, r.Width, r.Height, r.Height / 2.0, track);
-    let knob_x = if on { r.X + r.Width - 19.0 } else { r.X + 3.0 };
-    let knob = draw::ellipse_path(knob_x, r.Y + 3.0, 16.0, 16.0);
-    draw::fill(g, knob, if on { argb(255, 12, 20, 26) } else { argb(255, 200, 208, 224) });
-    draw::path_free(knob);
-}
-
-unsafe fn draw_button(g: *mut GpGraphics, r: RectF, label: &str, accent: bool, hover: bool) {
-    if accent {
-        let bg = if hover { argb(255, 54, 214, 244) } else { draw::C_CYAN };
-        draw::round_fill(g, r.X, r.Y, r.Width, r.Height, 12.0, bg);
-        paint_text(g, label, 12.5, true, argb(255, 8, 14, 20), r, ALIGN_CENTER);
-        return;
+    card(g, r, bg);
+    if ctx.focus == Some(a) {
+        let p = draw::rounded_rect(r.x + 3., r.y + 3., r.w - 6., r.h - 6., 11.);
+        draw::stroke(g, p, draw::C_ACCENT, 2.);
+        draw::path_free(p);
     }
-    if hover {
-        draw::round_fill(g, r.X, r.Y, r.Width, r.Height, 12.0, argb(255, 24, 28, 38));
-    }
-    let fg = if hover { draw::C_TEXT } else { argb(255, 168, 178, 200) };
-    paint_text(g, label, 12.5, false, fg, r, ALIGN_CENTER);
+    text(g, label, 12., true, draw::C_TEXT, r, ALIGN_CENTER);
 }
-
 unsafe fn paint(hwnd: HWND) {
     draw::gdiplus_init();
-
     let mut ps = PAINTSTRUCT::default();
     let hdc = BeginPaint(hwnd, &mut ps);
-    let mut rc = RECT::default();
-    let _ = GetClientRect(hwnd, &mut rc);
-    let w = rc.right - rc.left;
-    let h = rc.bottom - rc.top;
-
-    let ctx = match ctx_of(hwnd) {
-        Some(c) => c,
-        None => {
-            let _ = EndPaint(hwnd, &ps);
-            return;
-        }
+    let Some(ctx) = ctx_of(hwnd) else {
+        let _ = EndPaint(hwnd, &ps);
+        return;
     };
     let st = &ctx.state;
-
-    if let Some(surf) = Surface::new(w, h) {
-        let mut g: *mut GpGraphics = std::ptr::null_mut();
-        if GdipCreateFromHDC(surf.dc(), &mut g) == Status(0) && !g.is_null() {
+    let mut rc = RECT::default();
+    let _ = GetClientRect(hwnd, &mut rc);
+    if let Some(surface) = Surface::new(rc.right, rc.bottom) {
+        let mut g = std::ptr::null_mut();
+        if GdipCreateFromHDC(surface.dc(), &mut g) == Status(0) && !g.is_null() {
             let _ = GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
             let _ = GdipSetTextRenderingHint(g, TextRenderingHintAntiAliasGridFit);
-
-            // ---- Background: hand-painted dark card with soft edges ----------------
-
-            draw::round_fill(g, 0.0, 0.0, w as f32, h as f32, 6.0, argb(255, 10, 11, 16));
-
-            // ---- Header: Boykisser + wordmark, hand-drawn but stable ---------------
-
-            // Boykisser — slight tilt for human feel, no per-frame jitter.
-            draw::push_rotation(g, -6.5, 62.0, 62.0);
-            draw::draw_boykisser(g, 62.0, 62.0, 72.0);
-            draw::reset_transform(g);
-
-            // Highlighter bar — hand-drawn, slightly wobbly but stable.
-            draw::round_fill(g, 102.0, 22.0, 220.0, 34.0, 7.0, argb(51, 255, 86, 218));
-
-            // Wordmark — Segoe Print, stable hand-written feel.
-            draw::text_in(
+            draw::round_fill(g, 0., 0., rc.right as f32, rc.bottom as f32, 0., draw::C_BG);
+            let scale = (rc.right as f32 / PANEL_W as f32).min(rc.bottom as f32 / PANEL_H as f32);
+            let _ = GdipScaleWorldTransform(g, scale, scale, MatrixOrderAppend);
+            card(g, Rect::new(20., 20., 248., 720.), argb(255, 235, 219, 196));
+            text(
                 g,
-                "Segoe Print",
-                "mimi(typh)",
-                28.0,
+                "GAME OVERLAY",
+                17.,
                 true,
                 draw::C_TEXT,
-                108.0,
-                16.0,
-                368.0,
-                44.0,
+                Rect::new(36., 36., 216., 30.),
                 ALIGN_LEFT,
             );
-
-            // Label: hand-written feel, stable.
-            paint_text(
+            text(
                 g,
-                "оверлей FPS и пинга",
-                10.5,
+                "Твоё спокойное игровое место",
+                10.,
                 false,
                 draw::C_DIM,
-                RectF {
-                    X: 108.0,
-                    Y: 60.0,
-                    Width: 304.0,
-                    Height: 18.0,
-                },
+                Rect::new(36., 66., 216., 18.),
                 ALIGN_LEFT,
             );
-
-            // Version: fixed right-aligned, hand-written feel.
-            paint_text(
+            draw::draw_mimi(g, 36., 100., 216.);
+            text(
                 g,
-                "v1.4.0",
-                9.5,
+                "Mimi · art by Typh",
+                10.,
                 false,
-                argb(255, 120, 132, 158),
-                RectF {
-                    X: 476.0,
-                    Y: 30.0,
-                    Width: 140.0,
-                    Height: 18.0,
-                },
-                ALIGN_RIGHT,
+                draw::C_DIM,
+                Rect::new(36., 324., 216., 22.),
+                ALIGN_CENTER,
             );
-
-            // Hairline under header — hand-drawn, stable.
-            draw::line(g, 24.0, 100.0, 616.0, 100.0, argb(255, 30, 35, 50), 1.0);
-            draw::line(g, 24.0, 100.0, 120.0, 100.0, draw::C_CYAN, 2.0);
-
-            // ---- Live card — hand-cut, stable corners --------------------------------
-
-            draw::round_card(g, 24.0, 118.0, 592.0, 134.0, 18.0, argb(255, 18, 20, 28), argb(255, 38, 44, 60));
-
-            // Rail — hand-cut, stable.
-            draw::round_fill(g, 42.0, 134.0, 6.0, 102.0, 2.0, draw::C_CYAN);
-            draw::round_fill(g, 42.0, 134.0, 6.0, 46.0, 2.0, draw::C_MAGENTA);
-
+            text(
+                g,
+                "Всё под рукой",
+                19.,
+                true,
+                draw::C_TEXT,
+                Rect::new(36., 374., 216., 32.),
+                ALIGN_LEFT,
+            );
+            for (i, line) in [
+                "F1   показать / скрыть",
+                "F2 / F3   сменить цель",
+                "F4   следовать за игрой",
+                "F6   автозапуск",
+                "Tab + Enter   меню",
+                "Esc   свернуть в трей",
+            ]
+            .iter()
+            .enumerate()
+            {
+                text(
+                    g,
+                    line,
+                    11.,
+                    false,
+                    draw::C_DIM,
+                    Rect::new(36., 422. + i as f32 * 30., 216., 24.),
+                    ALIGN_LEFT,
+                );
+            }
+            text(
+                g,
+                &format!("v{} · portable", crate::APP_VERSION),
+                10.,
+                true,
+                draw::C_DIM,
+                Rect::new(36., 692., 216., 24.),
+                ALIGN_LEFT,
+            );
+            text(
+                g,
+                "Панель управления",
+                25.,
+                true,
+                draw::C_TEXT,
+                Rect::new(292., 22., 636., 38.),
+                ALIGN_LEFT,
+            );
+            text(
+                g,
+                "Показатели игры и настройки оверлея",
+                11.,
+                false,
+                draw::C_DIM,
+                Rect::new(292., 62., 636., 20.),
+                ALIGN_LEFT,
+            );
+            card(g, Rect::new(292., 96., 636., 100.), draw::C_CARD);
             let fps = st.fps.load(Ordering::Relaxed);
-            let ft = st.frametime_centi_ms.load(Ordering::Relaxed);
-            let ping_deci = st.ping_deci.load(Ordering::Relaxed);
-            let ping = if ping_deci < 0 { -1 } else { (ping_deci + 5) / 10 };
-            let lost = st.ping_lost.load(Ordering::Relaxed);
-
-            // FPS label
-            paint_text(
+            let ping = st.ping_deci.load(Ordering::Relaxed);
+            text(
                 g,
                 "FPS",
-                9.5,
+                10.,
                 true,
                 draw::C_DIM,
-                RectF {
-                    X: 60.0,
-                    Y: 128.0,
-                    Width: 128.0,
-                    Height: 16.0,
-                },
+                Rect::new(312., 106., 90., 20.),
                 ALIGN_LEFT,
             );
-
-            // FPS value — hand-written size, stable.
-            let fps_val = if fps == 0 { "--".to_string() } else { fps.to_string() };
-            paint_text(
+            text(
                 g,
-                &fps_val,
-                44.0,
+                &if fps == 0 {
+                    "—".into()
+                } else {
+                    fps.to_string()
+                },
+                36.,
                 true,
                 draw::fps_color(fps),
-                RectF {
-                    X: 58.0,
-                    Y: 142.0,
-                    Width: 196.0,
-                    Height: 58.0,
-                },
+                Rect::new(310., 124., 220., 54.),
                 ALIGN_LEFT,
             );
-
-            // PING label
-            paint_text(
+            draw::line(g, 590., 114., 590., 178., draw::C_BORDER, 1.);
+            text(
                 g,
-                "PING",
-                9.5,
+                "PING · ms",
+                10.,
                 true,
                 draw::C_DIM,
-                RectF {
-                    X: 346.0,
-                    Y: 128.0,
-                    Width: 128.0,
-                    Height: 16.0,
-                },
+                Rect::new(614., 106., 200., 20.),
                 ALIGN_LEFT,
             );
-
-            // Ping value
-            let ping_val = if lost || ping_deci < 0 {
-                "--".to_string()
-            } else if ping_deci < 100 {
-                format!("{:.1}", ping_deci as f32 / 10.0)
-            } else {
-                format!("{}", ping)
-            };
-            paint_text(
+            text(
                 g,
-                &ping_val,
-                44.0,
+                &if ping < 0 || st.ping_lost.load(Ordering::Relaxed) {
+                    "—".into()
+                } else {
+                    format!("{:.1}", ping as f32 / 10.)
+                },
+                36.,
                 true,
-                draw::ping_color(ping, lost),
-                RectF {
-                    X: 344.0,
-                    Y: 140.0,
-                    Width: 176.0,
-                    Height: 58.0,
-                },
-                ALIGN_RIGHT,
-            );
-
-            // ms suffix
-            paint_text(
-                g,
-                "ms",
-                10.5,
-                false,
-                draw::ping_color(ping, lost),
-                RectF {
-                    X: 518.0,
-                    Y: 168.0,
-                    Width: 36.0,
-                    Height: 14.0,
-                },
+                draw::ping_color(ping / 10, ping < 0),
+                Rect::new(612., 124., 290., 54.),
                 ALIGN_LEFT,
             );
-
-            // Game frame text
-            let game = st.game_name_string();
-            let frame = if fps == 0 {
-                "ожидание кадра".to_string()
-            } else {
-                format!("{:.1} ms кадр", ft as f32 / 100.0)
-            };
-            let ft_text = if game.is_empty() {
-                frame
-            } else {
-                format!("{} · {frame}", short(&game, 30))
-            };
-            paint_text(
-                g,
-                &ft_text,
-                9.5,
-                false,
-                draw::C_DIM,
-                RectF {
-                    X: 60.0,
-                    Y: 208.0,
-                    Width: 524.0,
-                    Height: 18.0,
-                },
-                ALIGN_LEFT,
-            );
-
-            // ---- Settings section -----------------------------------------------------
-
-            // Settings title
-            paint_text(
-                g,
-                "Настройки",
-                12.5,
-                true,
-                draw::C_TEXT,
-                RectF {
-                    X: 22.0,
-                    Y: 260.0,
-                    Width: 304.0,
-                    Height: 20.0,
-                },
-                ALIGN_LEFT,
-            );
-
-            // Settings rows — stable, hand-written list.
-            let rows = [
+            for (a, label, hint, on) in [
                 (
+                    Action::ToggleAutostart,
                     "Запускать с Windows",
-                    "автозапуск при входе в систему",
+                    "Автоматически при входе",
                     st.autostart.load(Ordering::Relaxed),
                 ),
                 (
-                    "Следовать за окном игры",
-                    "карточка держится у активного окна",
+                    Action::ToggleFollow,
+                    "Следовать за игрой",
+                    "Закреплять у активного окна",
                     st.follow_window.load(Ordering::Relaxed),
                 ),
                 (
-                    "Оверлей поверх игры",
-                    "или клавиша F1",
+                    Action::ToggleOverlay,
+                    "Показывать оверлей",
+                    "Поверх окна игры · F1",
                     st.visible.load(Ordering::Relaxed),
                 ),
-            ];
-            for (i, (title, hint, on)) in rows.iter().enumerate() {
-                let r = row_rect(i);
-                let hovered = ctx.hover == Some(match i {
-                    0 => Action::ToggleAutostart,
-                    1 => Action::ToggleFollow,
-                    _ => Action::ToggleOverlay,
-                });
-
-                if hovered {
-                    draw::round_fill(g, r.X + 1.0, r.Y, r.Width - 2.0, r.Height, 7.0, argb(255, 20, 24, 34));
-                }
-                paint_text(
+            ] {
+                control(g, ctx, a, "", false);
+                let r = layout::rect(a);
+                text(
                     g,
-                    title,
-                    12.0,
+                    label,
+                    12.,
                     true,
                     draw::C_TEXT,
-                    RectF {
-                        X: r.X + 10.0,
-                        Y: r.Y + 4.0,
-                        Width: 382.0,
-                        Height: 20.0,
-                    },
+                    Rect::new(r.x + 16., r.y + 5., 480., 22.),
                     ALIGN_LEFT,
                 );
-                paint_text(
+                text(
                     g,
                     hint,
-                    9.0,
+                    9.,
                     false,
                     draw::C_DIM,
-                    RectF {
-                        X: r.X + 10.0,
-                        Y: r.Y + 22.0,
-                        Width: 382.0,
-                        Height: 16.0,
-                    },
+                    Rect::new(r.x + 16., r.y + 27., 480., 16.),
                     ALIGN_LEFT,
                 );
-                draw_toggle(g, toggle_rect(i), *on, hovered);
-
-                if i < rows.len() - 1 {
-                    draw::line(g, r.X + 12.0, r.Y + r.Height - 3.0, r.X + r.Width - 12.0, r.Y + r.Height - 3.0, argb(255, 26, 30, 42), 1.0);
-                }
+                draw::round_fill(
+                    g,
+                    r.x + r.w - 66.,
+                    r.y + 13.,
+                    48.,
+                    24.,
+                    12.,
+                    if on { draw::C_ACCENT } else { draw::C_BORDER },
+                );
+                let knob =
+                    draw::ellipse_path(r.x + r.w - if on { 40. } else { 62. }, r.y + 17., 16., 16.);
+                draw::fill(g, knob, draw::C_CARD);
+                draw::path_free(knob);
             }
-
-            // ---- Size section ---------------------------------------------------------
-
-            paint_text(
+            text(
                 g,
                 "Размер оверлея",
-                12.5,
+                12.,
                 true,
                 draw::C_TEXT,
-                RectF {
-                    X: 22.0,
-                    Y: 452.0,
-                    Width: 304.0,
-                    Height: 20.0,
-                },
+                Rect::new(292., 406., 636., 24.),
                 ALIGN_LEFT,
             );
-            paint_text(
-                g,
-                "применяется сразу и запоминается",
-                9.0,
-                false,
-                draw::C_DIM,
-                RectF {
-                    X: 140.0,
-                    Y: 454.0,
-                    Width: 310.0,
-                    Height: 16.0,
-                },
-                ALIGN_LEFT,
-            );
-
-            let scale_now = st.overlay_scale.load(Ordering::Relaxed);
-            for (i, pct) in SCALES.iter().enumerate() {
-                let r = scale_chip_rect(i);
-                let active = scale_now == *pct;
-                let hovered = ctx.hover == Some(Action::Scale(*pct));
-                let chip_bg = if active {
-                    argb(255, 22, 38, 50)
-                } else if hovered {
-                    argb(255, 24, 30, 42)
-                } else {
-                    argb(255, 16, 19, 27)
-                };
-                draw::round_fill(g, r.X, r.Y, r.Width, r.Height, 9.0, chip_bg);
-                if active || hovered {
-                    let p = draw::rounded_rect(r.X, r.Y, r.Width, r.Height, 8.0);
-                    draw::stroke(g, p, if active { draw::C_CYAN } else { argb(255, 40, 50, 70) }, 1.0);
-                    draw::path_free(p);
-                }
-                paint_text(
+            for pct in SCALES {
+                control(
                     g,
+                    ctx,
+                    Action::Scale(pct),
                     &format!("{pct}%"),
-                    11.0,
-                    active,
-                    if active { draw::C_CYAN } else { argb(255, 160, 170, 190) },
-                    r,
-                    ALIGN_CENTER,
+                    pct == st.overlay_scale.load(Ordering::Relaxed),
                 );
             }
-
-            // ---- Targets section ------------------------------------------------------
-
-            paint_text(
+            text(
                 g,
-                "Цели пинга",
-                12.5,
+                "Цель пинга",
+                12.,
                 true,
                 draw::C_TEXT,
-                RectF {
-                    X: 22.0,
-                    Y: 532.0,
-                    Width: 304.0,
-                    Height: 20.0,
-                },
+                Rect::new(292., 494., 636., 24.),
                 ALIGN_LEFT,
             );
-            paint_text(
+            control(g, ctx, Action::PreviousTarget, "‹", false);
+            control(g, ctx, Action::NextTarget, "›", false);
+            let list = st.targets.lock().map(|v| v.clone()).unwrap_or_default();
+            let index = st.target_index.load(Ordering::Relaxed) % list.len().max(1);
+            let target = list
+                .get(index)
+                .map(|v| v.label())
+                .unwrap_or_else(|| "Нет целей".into());
+            text(
                 g,
-                "F2 / F3 переключают",
-                9.0,
-                false,
-                draw::C_DIM,
-                RectF {
-                    X: 124.0,
-                    Y: 534.0,
-                    Width: 268.0,
-                    Height: 16.0,
-                },
-                ALIGN_LEFT,
-            );
-
-            let targets: Vec<String> = {
-                let list = st.targets.lock().map(|t| t.clone()).unwrap_or_default();
-                list.iter().map(|t| t.label()).collect()
-            };
-            let active = st.target_index.load(Ordering::Relaxed);
-            for (i, label) in targets.iter().take(4).enumerate() {
-                let r = target_chip_rect(i);
-                let is_active = i == active % targets.len().max(1);
-                let hovered = ctx.hover == Some(Action::Target(i));
-                let chip_bg = if is_active {
-                    argb(255, 22, 38, 50)
-                } else if hovered {
-                    argb(255, 24, 30, 42)
-                } else {
-                    argb(255, 16, 19, 27)
-                };
-                draw::round_fill(g, r.X, r.Y, r.Width, r.Height, 8.0, chip_bg);
-                if is_active || hovered {
-                    let p = draw::rounded_rect(r.X, r.Y, r.Width, r.Height, 7.0);
-                    draw::stroke(g, p, if is_active { draw::C_CYAN } else { argb(255, 40, 50, 70) }, 1.0);
-                    draw::path_free(p);
-                }
-                paint_text(
-                    g,
-                    &short(label, 16),
-                    10.0,
-                    is_active,
-                    if is_active { draw::C_CYAN } else { draw::C_DIM },
-                    RectF {
-                        X: r.X + 5.0,
-                        Y: r.Y + 4.0,
-                        Width: r.Width - 10.0,
-                        Height: r.Height - 8.0,
-                    },
-                    ALIGN_CENTER,
-                );
-            }
-            if targets.len() > 4 {
-                paint_text(
-                    g,
-                    &format!("+{}", targets.len() - 4),
-                    10.0,
-                    true,
-                    draw::C_DIM,
-                    target_chip_rect(4),
-                    ALIGN_CENTER,
-                );
-            }
-
-                        // ---- Buttons ----------------------------------------------------------------
-
-            // Check-update button — visible as soon as the app starts.
-            let latest = st.update_latest_string();
-            let check_label = match st.update_status.load(Ordering::Relaxed) {
-                UPDATE_CHECKING => "Проверка…".to_string(),
-                UPDATE_NONE => "Обновлений нет".to_string(),
-                UPDATE_NEWER => format!("Качаю {latest}"),
-                UPDATE_READY => format!("Обновление {latest} готово"),
-                UPDATE_FAILED => "Ошибка проверки".to_string(),
-                _ => "Проверить обновление".to_string(),
-            };
-            draw_button(g, button_rect(3), &check_label, true, ctx.hover == Some(Action::CheckUpdate));
-
-
-            // Buttons — fixed sizes, hand-painted look.
-            let exact = st.fps_source.load(Ordering::Relaxed) == SOURCE_ETW;
-            let elevate_label = if exact {
-                "Точный FPS включён"
-            } else {
-                "Точный FPS (админ)"
-            };
-            draw_button(g, button_rect(0), elevate_label, !exact, ctx.hover == Some(Action::Elevate));
-
-            let overlay_label = if st.visible.load(Ordering::Relaxed) {
-                "Убрать оверлей"
-            } else {
-                "Вернуть оверлей"
-            };
-            draw_button(g, button_rect(1), overlay_label, false, ctx.hover == Some(Action::ToggleOverlay));
-            draw_button(g, button_rect(2), "В трей", false, ctx.hover == Some(Action::HideToTray));
-            draw_button(g, button_rect(4), "Выход", false, ctx.hover == Some(Action::Quit));
-
-            // ---- Footer ----------------------------------------------------------------
-
-            let detail = st.fps_detail.lock().map(|d| d.clone()).unwrap_or_default();
-            paint_text(
-                g,
-                &format!("FPS: {}", short(&detail, 62)),
-                9.0,
-                false,
-                draw::C_DIM,
-                RectF {
-                    X: 20.0,
-                    Y: 680.0,
-                    Width: 464.0,
-                    Height: 16.0,
-                },
-                ALIGN_LEFT,
-            );
-
-            paint_text(
-                g,
-                "mimi(typh)",
-                9.0,
+                &format!(
+                    "{}   ·   {} / {}",
+                    short(&target, 42),
+                    if list.is_empty() { 0 } else { index + 1 },
+                    list.len()
+                ),
+                12.,
                 true,
-                argb(170, 138, 218, 242),
-                RectF {
-                    X: 476.0,
-                    Y: 678.0,
-                    Width: 140.0,
-                    Height: 16.0,
-                },
-                ALIGN_RIGHT,
+                draw::C_TEXT,
+                Rect::new(352., 526., 516., 44.),
+                ALIGN_CENTER,
             );
-
-            paint_text(
+            let exact = st.fps_source.load(Ordering::Relaxed) == SOURCE_ETW;
+            control(
                 g,
-                "F1 оверлей · F2/F3 цель · F4 слежение · F6 автозапуск · End выход",
-                9.0,
-                false,
-                argb(120, 136, 148, 170),
-                RectF {
-                    X: 18.0,
-                    Y: 696.0,
-                    Width: 604.0,
-                    Height: 16.0,
+                ctx,
+                Action::Elevate,
+                if exact {
+                    "Перезапуск от админа"
+                } else {
+                    "Точный FPS · админ"
                 },
+                false,
+            );
+            control(g, ctx, Action::HideToTray, "Свернуть в трей", false);
+            text(
+                g,
+                if exact {
+                    "Точный FPS активен"
+                } else {
+                    "Базовый FPS"
+                },
+                10.,
+                false,
+                draw::C_DIM,
+                Rect::new(724., 594., 204., 48.),
+                ALIGN_CENTER,
+            );
+            let label = match st.update_status.load(Ordering::Relaxed) {
+                UPDATE_CHECKING => "Проверяю обновления…".into(),
+                UPDATE_NEWER => "Скачиваю обновление…".into(),
+                UPDATE_READY => format!("Запустить v{}", st.update_latest_string()),
+                UPDATE_NONE => "Версия актуальна · проверить снова".into(),
+                UPDATE_FAILED => "Ошибка обновления · повторить".into(),
+                _ => "Проверить обновления".into(),
+            };
+            control(g, ctx, Action::CheckUpdate, &label, false);
+            control(g, ctx, Action::Quit, "Закрыть приложение", false);
+            let notice = st.notice.lock().ok().and_then(|v| {
+                v.as_ref()
+                    .filter(|(_, t)| t.elapsed().as_secs() < 8)
+                    .map(|(s, _)| s.clone())
+            });
+            let detail = st.fps_detail.lock().map(|v| v.clone()).unwrap_or_default();
+            text(
+                g,
+                &short(&notice.unwrap_or(detail), 85),
+                10.,
+                false,
+                draw::C_DIM,
+                Rect::new(292., 714., 636., 26.),
                 ALIGN_LEFT,
             );
-
             let _ = GdipDeleteGraphics(g);
         }
-        surf.blit(hdc);
+        surface.blit(hdc);
     }
-
     let _ = EndPaint(hwnd, &ps);
 }
-
-// ---------------------------------------------------------------------------\n// Actions\n// ---------------------------------------------------------------------------\n
-
 fn toggle_autostart(state: &AppState) {
     match crate::autostart::toggle() {
         Ok(on) => {
             state.autostart.store(on, Ordering::Relaxed);
-            state.set_notice(if on { "автозапуск: вкл" } else { "автозапуск: выкл" });
+            state.set_notice(if on {
+                "автозапуск: вкл"
+            } else {
+                "автозапуск: выкл"
+            });
         }
         Err(e) => {
             crate::vlog!("[autostart] {e}");
@@ -743,7 +421,11 @@ fn toggle_autostart(state: &AppState) {
 fn toggle_overlay(state: &AppState) {
     let on = !state.visible.load(Ordering::Relaxed);
     state.visible.store(on, Ordering::Relaxed);
-    state.set_notice(if on { "оверлей: вкл" } else { "оверлей: выкл" });
+    state.set_notice(if on {
+        "оверлей: вкл"
+    } else {
+        "оверлей: выкл"
+    });
 }
 
 fn elevate(state: &AppState) {
@@ -774,13 +456,23 @@ fn perform(ctx: &mut PanelCtx, action: Action) {
         Action::ToggleFollow => {
             let v = !st.follow_window.load(Ordering::Relaxed);
             st.follow_window.store(v, Ordering::Relaxed);
-            st.set_notice(if v { "слежение: вкл" } else { "слежение: выкл" });
+            st.set_notice(if v {
+                "слежение: вкл"
+            } else {
+                "слежение: выкл"
+            });
         }
         Action::ToggleOverlay => toggle_overlay(&st),
-        Action::Target(i) => {
-            st.target_index.store(i, Ordering::Relaxed);
-            if let Ok(mut h) = st.history.lock() {
-                h.clear();
+        Action::PreviousTarget => {
+            st.cycle_target(-1);
+            if st.target_count() < 2 {
+                st.set_notice("Доступна одна цель пинга");
+            }
+        }
+        Action::NextTarget => {
+            st.cycle_target(1);
+            if st.target_count() < 2 {
+                st.set_notice("Доступна одна цель пинга");
             }
         }
         Action::Scale(pct) => {
@@ -790,9 +482,25 @@ fn perform(ctx: &mut PanelCtx, action: Action) {
         }
         Action::Elevate => elevate(&st),
         Action::HideToTray => unsafe {
-            let _ = ShowWindow(ctx.hwnd, SW_HIDE);
+            let _ = ShowWindow(ctx.hwnd, if ctx.tray { SW_HIDE } else { SW_MINIMIZE });
         },
-        Action::CheckUpdate => ctx.state.request_update_check(),
+        Action::CheckUpdate => {
+            if st.update_status.load(Ordering::Relaxed) == UPDATE_READY {
+                let file = st.update_file.lock().ok().and_then(|f| f.clone());
+                if let Some(file) = file {
+                    if crate::update::launch_installer(&file) {
+                        st.should_quit.store(true, Ordering::Relaxed);
+                    } else {
+                        st.set_notice("Не удалось открыть обновление");
+                    }
+                }
+            } else if !matches!(
+                st.update_status.load(Ordering::Relaxed),
+                UPDATE_CHECKING | UPDATE_NEWER
+            ) {
+                st.request_update_check();
+            }
+        }
         Action::Quit => st.should_quit.store(true, Ordering::Relaxed),
     }
     unsafe {
@@ -837,13 +545,33 @@ unsafe fn tray_menu(ctx: &mut PanelCtx) {
     let autostart_on = ctx.state.autostart.load(Ordering::Relaxed);
 
     let show = wide("Показать панель");
-    let overlay = wide(if overlay_on { "Оверлей: скрыть" } else { "Оверлей: показать" });
-    let autostart = wide(if autostart_on { "Автозапуск: выключить" } else { "Автозапуск: включить" });
+    let overlay = wide(if overlay_on {
+        "Оверлей: скрыть"
+    } else {
+        "Оверлей: показать"
+    });
+    let autostart = wide(if autostart_on {
+        "Автозапуск: выключить"
+    } else {
+        "Автозапуск: включить"
+    });
     let quit = wide("Выход");
+    let update = wide("Проверить обновления");
 
     let _ = AppendMenuW(menu, MF_STRING, CMD_SHOW, PCWSTR(show.as_ptr()));
-    let _ = AppendMenuW(menu, MF_STRING, CMD_TOGGLE_OVERLAY, PCWSTR(overlay.as_ptr()));
-    let _ = AppendMenuW(menu, MF_STRING, CMD_TOGGLE_AUTOSTART, PCWSTR(autostart.as_ptr()));
+    let _ = AppendMenuW(
+        menu,
+        MF_STRING,
+        CMD_TOGGLE_OVERLAY,
+        PCWSTR(overlay.as_ptr()),
+    );
+    let _ = AppendMenuW(
+        menu,
+        MF_STRING,
+        CMD_TOGGLE_AUTOSTART,
+        PCWSTR(autostart.as_ptr()),
+    );
+    let _ = AppendMenuW(menu, MF_STRING, CMD_CHECK_UPDATE, PCWSTR(update.as_ptr()));
     let _ = AppendMenuW(menu, MF_SEPARATOR, 0, PCWSTR::null());
     let _ = AppendMenuW(menu, MF_STRING, CMD_QUIT, PCWSTR(quit.as_ptr()));
 
@@ -886,7 +614,12 @@ unsafe fn ctx_of(hwnd: HWND) -> Option<&'static mut PanelCtx> {
     }
 }
 
-unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+unsafe extern "system" fn wnd_proc(
+    hwnd: HWND,
+    msg: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
     match msg {
         WM_PAINT => {
             unsafe { paint(hwnd) };
@@ -906,34 +639,98 @@ unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam:
             LRESULT(0)
         }
         WM_MOUSEMOVE => {
-            unsafe {
-                let x = (lparam.0 & 0xffff) as i16 as f32;
-                let y = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
-                if let Some(ctx) = ctx_of(hwnd) {
-                    let hovered = hit_test(&ctx.state, x, y);
-                    if hovered != ctx.hover {
-                        ctx.hover = hovered;
-                        let _ = InvalidateRect(hwnd, None, false);
-                    }
+            if let Some(ctx) = ctx_of(hwnd) {
+                let (x, y) = mouse_point(hwnd, lparam);
+                ctx.hover = layout::hit_test(x, y);
+                let mut track = TRACKMOUSEEVENT {
+                    cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                    dwFlags: TME_LEAVE,
+                    hwndTrack: hwnd,
+                    dwHoverTime: 0,
+                };
+                let _ = TrackMouseEvent(&mut track);
+                let _ = InvalidateRect(hwnd, None, false);
+            }
+            LRESULT(0)
+        }
+        WM_MOUSELEAVE => {
+            if let Some(ctx) = ctx_of(hwnd) {
+                ctx.hover = None;
+            }
+            let _ = InvalidateRect(hwnd, None, false);
+            LRESULT(0)
+        }
+        WM_SETCURSOR if (lparam.0 as u32 & 0xffff) == HTCLIENT => {
+            let active = ctx_of(hwnd).map(|c| c.hover.is_some()).unwrap_or(false);
+            let _ = SetCursor(
+                LoadCursorW(None, if active { IDC_HAND } else { IDC_ARROW }).unwrap_or_default(),
+            );
+            LRESULT(1)
+        }
+        WM_LBUTTONDOWN => {
+            if let Some(ctx) = ctx_of(hwnd) {
+                let (x, y) = mouse_point(hwnd, lparam);
+                ctx.pressed = layout::hit_test(x, y);
+                ctx.focus = ctx.pressed;
+                if ctx.pressed.is_some() {
+                    SetCapture(hwnd);
                 }
             }
+            let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            unsafe {
-                let x = (lparam.0 & 0xffff) as i16 as f32;
-                let y = ((lparam.0 >> 16) & 0xffff) as i16 as f32;
-                if let Some(ctx) = ctx_of(hwnd) {
-                    if let Some(action) = hit_test(&ctx.state, x, y) {
-                        perform(ctx, action);
+            let (x, y) = mouse_point(hwnd, lparam);
+            let action = if let Some(ctx) = ctx_of(hwnd) {
+                let down = ctx.pressed.take();
+                down.filter(|a| Some(*a) == layout::hit_test(x, y))
+            } else {
+                None
+            };
+            let _ = ReleaseCapture();
+            if let (Some(ctx), Some(action)) = (ctx_of(hwnd), action) {
+                perform(ctx, action);
+            }
+            let _ = InvalidateRect(hwnd, None, false);
+            LRESULT(0)
+        }
+        WM_CAPTURECHANGED | WM_KILLFOCUS => {
+            if let Some(ctx) = ctx_of(hwnd) {
+                ctx.pressed = None;
+            }
+            let _ = InvalidateRect(hwnd, None, false);
+            LRESULT(0)
+        }
+        WM_KEYDOWN => {
+            if let Some(ctx) = ctx_of(hwnd) {
+                match wparam.0 as u16 {
+                    9 => {
+                        let backwards = GetKeyState(0x10) < 0;
+                        let actions = layout::actions();
+                        let current = ctx.focus.and_then(|a| actions.iter().position(|v| *v == a));
+                        let next = match current {
+                            Some(i) if backwards => (i + actions.len() - 1) % actions.len(),
+                            Some(i) => (i + 1) % actions.len(),
+                            None if backwards => actions.len() - 1,
+                            None => 0,
+                        };
+                        ctx.focus = Some(actions[next]);
                     }
+                    13 | 32 if lparam.0 & (1 << 30) == 0 => {
+                        if let Some(action) = ctx.focus {
+                            perform(ctx, action);
+                        }
+                    }
+                    27 => perform(ctx, Action::HideToTray),
+                    _ => {}
                 }
             }
+            let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
         WM_CLOSE => {
-            unsafe {
-                let _ = ShowWindow(hwnd, SW_HIDE);
+            if let Some(ctx) = ctx_of(hwnd) {
+                perform(ctx, Action::HideToTray);
             }
             LRESULT(0)
         }
@@ -980,7 +777,9 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
                 std::thread::sleep(std::time::Duration::from_millis(200));
                 continue;
             }
-            state.update_status.store(UPDATE_CHECKING, Ordering::Relaxed);
+            state
+                .update_status
+                .store(UPDATE_CHECKING, Ordering::Relaxed);
             match crate::update::check() {
                 Ok(release) => {
                     if let Ok(mut v) = state.update_latest.lock() {
@@ -991,8 +790,8 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
                         continue;
                     }
                     state.update_status.store(UPDATE_NEWER, Ordering::Relaxed);
-                    // Обновление качается само: сначала MSI, иначе portable ZIP.
-                    let Some(url) = release.msi_url.or(release.zip_url) else {
+                    // Prefer the standalone EXE. Launch only on the next explicit click.
+                    let Some(url) = release.exe_url.or(release.msi_url) else {
                         state.update_status.store(UPDATE_FAILED, Ordering::Relaxed);
                         continue;
                     };
@@ -1003,12 +802,18 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
                                 *f = Some(shown.clone());
                             }
                             state.update_status.store(UPDATE_READY, Ordering::Relaxed);
-                            let _ = crate::update::launch_installer(&shown);
+                            state.set_notice("Обновление скачано. Нажми кнопку, чтобы запустить.");
                         }
-                        Err(_) => state.update_status.store(UPDATE_FAILED, Ordering::Relaxed),
+                        Err(error) => {
+                            state.set_notice(error);
+                            state.update_status.store(UPDATE_FAILED, Ordering::Relaxed);
+                        }
                     }
                 }
-                Err(_) => state.update_status.store(UPDATE_FAILED, Ordering::Relaxed),
+                Err(error) => {
+                    state.set_notice(error);
+                    state.update_status.store(UPDATE_FAILED, Ordering::Relaxed);
+                }
             }
         });
     }
@@ -1027,10 +832,30 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
         RegisterClassW(&wc);
 
         let style = WS_OVERLAPPEDWINDOW & !WS_MAXIMIZEBOX & !WS_THICKFRAME;
-        let mut rect = RECT { left: 0, top: 0, right: PANEL_W, bottom: PANEL_H };
+        let mut work_area = RECT::default();
+        let _ = SystemParametersInfoW(
+            SPI_GETWORKAREA,
+            0,
+            Some(&mut work_area as *mut RECT as *mut _),
+            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+        );
+        let fit = if work_area.right > work_area.left && work_area.bottom > work_area.top {
+            ((work_area.right - work_area.left - 40) as f32 / PANEL_W as f32)
+                .min((work_area.bottom - work_area.top - 80) as f32 / PANEL_H as f32)
+                .min(1.0)
+                .max(0.4)
+        } else {
+            1.0
+        };
+        let mut rect = RECT {
+            left: 0,
+            top: 0,
+            right: (PANEL_W as f32 * fit) as i32,
+            bottom: (PANEL_H as f32 * fit) as i32,
+        };
         let _ = AdjustWindowRect(&mut rect, style, false);
 
-        let title = wide("mimi(typh) — оверлей FPS и пинга");
+        let title = wide("GameOverlay — уютный контроль игры");
         let hwnd = match CreateWindowExW(
             WINDOW_EX_STYLE(0),
             PCWSTR(class_name.as_ptr()),
@@ -1050,7 +875,7 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
         };
 
         // Dark title bar + rounded corners.
-        let dark: u32 = 1;
+        let dark: u32 = 0;
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWINDOWATTRIBUTE(20),
@@ -1069,14 +894,15 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
             state: state.clone(),
             hwnd,
             hover: None,
+            pressed: None,
+            focus: None,
             tray: false,
         }));
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, ctx as isize);
-                    state.panel_hwnd.store(hwnd.0 as isize, Ordering::Relaxed);
+        state.panel_hwnd.store(hwnd.0 as isize, Ordering::Relaxed);
 
         if let Some(c) = ctx.as_mut() {
             tray_add(c);
-            c.state.request_update_check();
         }
 
         if !start_hidden {
