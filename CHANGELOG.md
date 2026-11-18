@@ -1,3 +1,12 @@
+# 1.5.1
+
+- Follow movement updates every 16 ms with time-based smoothing; metrics continue to redraw every 100 ms.
+- Opening the control panel preserves the overlay position.
+- Monitor work-area bounds support negative coordinates and keep the card above the taskbar.
+- Avoid redundant window moves and release timers, hotkeys and the overlay state on shutdown.
+- Autostart recreates a missing HKCU Run key instead of failing after an uninstall.
+- Tests cover movement convergence, refresh-rate independence and monitor bounds.
+
 # 1.5.0
 
 - Rebuilt the control panel with a beige and brown palette shared by the overlay.

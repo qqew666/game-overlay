@@ -1,3 +1,16 @@
+# 1.5.1 verification
+
+Release cross-build for Windows x64 succeeded with Rust 1.100.0 and MinGW GCC 14.
+Three motion regression tests and three layout tests passed.
+
+The actual EXE was run in Wine 10. A separate native Win32 probe moved a foreground window and observed 16 distinct overlay positions before settling at the expected coordinates (520, 320). Switching focus to the panel preserved the position.
+
+Installer checks cover installation of the exact EXE, shortcuts, autostart, upgrade from 1.5.0, and removal. Monitor-bound tests cover negative coordinates and an overlay larger than its work area.
+
+Windows gaming performance, physical multi-monitor setups and UAC still require testing on Windows 10/11. Wine does not validate real game FPS or Windows desktop composition.
+
+Historical 1.5.0 report follows.
+
 # GameOverlay 1.5.0 verification
 
 ## Build

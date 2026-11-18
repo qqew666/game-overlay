@@ -6,7 +6,7 @@
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
+    RegCloseKey, RegCreateKeyW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
     HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
 };
 
@@ -35,7 +35,13 @@ fn command_line() -> Option<String> {
 /// Registers the current executable for the current user.
 pub fn enable() -> Result<(), String> {
     let cmd = command_line().ok_or("cannot resolve the executable path")?;
-    let key = open_run_key(KEY_SET_VALUE).ok_or("cannot open HKCU Run key for writing")?;
+    let mut key = HKEY::default();
+    let status = unsafe {
+        RegCreateKeyW(HKEY_CURRENT_USER, RUN_KEY, &mut key)
+    };
+    if status != ERROR_SUCCESS {
+        return Err(format!("cannot create/open HKCU Run key: {status:?}"));
+    }
 
     // REG_SZ must include the terminating NUL in the byte count.
     let wide: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();

@@ -10,7 +10,8 @@ use std::sync::Arc;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, AC_SRC_ALPHA, BLENDFUNCTION, HDC, PAINTSTRUCT,
+    BeginPaint, EndPaint, GetMonitorInfoW, MonitorFromWindow, MONITORINFO,
+    MONITOR_DEFAULTTONEAREST, AC_SRC_ALPHA, BLENDFUNCTION, HDC, PAINTSTRUCT,
 };
 use windows::Win32::Graphics::GdiPlus::{
     GdipCreateFromHDC, GdipDeleteGraphics, GdipScaleWorldTransform, GdipSetSmoothingMode,
@@ -19,7 +20,7 @@ use windows::Win32::Graphics::GdiPlus::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, MOD_NOREPEAT, VK_END, VK_F1, VK_F2, VK_F3, VK_F4, VK_F6,
+    RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT, VK_END, VK_F1, VK_F2, VK_F3, VK_F4, VK_F6,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -482,8 +483,11 @@ unsafe extern "system" fn wnd_proc(
                         let _ = ShowWindow(hwnd, SW_HIDE);
                     }
                     if want {
-                        position_overlay(hwnd, st);
-                        render(hwnd, st);
+                        if wparam.0 == 1 {
+                            position_overlay(hwnd, st, false);
+                        } else {
+                            render(hwnd, st);
+                        }
                     }
                 }
             }
@@ -534,6 +538,15 @@ unsafe extern "system" fn wnd_proc(
         WM_NCHITTEST => LRESULT(HTTRANSPARENT as isize),
         WM_ERASEBKGND => LRESULT(1),
         WM_DESTROY => {
+            let _ = KillTimer(hwnd, 1);
+            let _ = KillTimer(hwnd, 2);
+            for id in 1..=6 { let _ = UnregisterHotKey(hwnd, id); }
+            let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppState;
+            SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
+            if !ptr.is_null() {
+                let state = Arc::from_raw(ptr);
+                state.overlay_hwnd.store(0, Ordering::Relaxed);
+            }
             unsafe { PostQuitMessage(0) };
             LRESULT(0)
         }
@@ -541,42 +554,50 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-unsafe fn position_overlay(hwnd: HWND, st: &AppState) {
-    let (win_w, win_h) = window_size(st);
-    let screen_w = GetSystemMetrics(SM_CXSCREEN);
-    // Default corner: top right. Following a window overrides it below.
-    let mut pos = (screen_w - win_w - 20, 20);
+thread_local! {
+    static MOTION: std::cell::RefCell<(crate::movement::Motion, std::time::Instant)> =
+        std::cell::RefCell::new((crate::movement::Motion::default(), std::time::Instant::now()));
+}
 
-    if st.follow_window.load(Ordering::Relaxed) {
-        let fg = GetForegroundWindow();
-        if !fg.is_invalid() && fg != hwnd {
-            let mut r = windows::Win32::Foundation::RECT::default();
-            if GetWindowRect(fg, &mut r).is_ok() {
-                pos = (r.left + 20, r.top + 20);
+unsafe fn position_overlay(hwnd: HWND, st: &AppState, snap: bool) {
+    let size = window_size(st);
+    let foreground = GetForegroundWindow();
+    let panel = HWND(st.panel_hwnd.load(Ordering::Relaxed) as *mut _);
+    let following = st.follow_window.load(Ordering::Relaxed);
+    let own_window = foreground == panel || foreground == hwnd;
+    let anchor = if following && !foreground.is_invalid() && !own_window
+        && !IsIconic(foreground).as_bool() { foreground } else { hwnd };
+    let mut monitor = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
+    if !GetMonitorInfoW(MonitorFromWindow(anchor, MONITOR_DEFAULTTONEAREST), &mut monitor).as_bool() {
+        return;
+    }
+    let work = monitor.rcWork;
+    let area = (work.left, work.top, work.right, work.bottom);
+    let mut target = (work.right - size.0 - 20, work.top + 20);
+    if following {
+        if anchor == foreground && !own_window {
+            let mut rect = windows::Win32::Foundation::RECT::default();
+            if GetWindowRect(foreground, &mut rect).is_ok() {
+                target = (rect.left + 20, rect.top + 20);
             }
+        } else if let Ok(position) = st.pos.lock() {
+            target = *position;
         }
     }
-
-    if pos.0 < 0 || pos.0 > screen_w - win_w {
-        pos.0 = screen_w - win_w - 20;
-    }
-    if pos.1 < 0 {
-        pos.1 = 20;
-    }
-
-    if let Ok(mut p) = st.pos.lock() {
-        *p = pos;
-    }
-
-    let _ = SetWindowPos(
-        hwnd,
-        HWND_TOPMOST,
-        pos.0,
-        pos.1,
-        win_w,
-        win_h,
-        SWP_NOACTIVATE | SWP_SHOWWINDOW,
-    );
+    target = crate::movement::constrain(target, size, area);
+    let position = MOTION.with(|motion| {
+        let mut motion = motion.borrow_mut();
+        let now = std::time::Instant::now();
+        let seconds = now.duration_since(motion.1).as_secs_f64();
+        motion.1 = now;
+        crate::movement::constrain(motion.0.update(target, seconds, snap), size, area)
+    });
+    if let Ok(mut current) = st.pos.lock() { *current = position; }
+    let mut current = windows::Win32::Foundation::RECT::default();
+    if GetWindowRect(hwnd, &mut current).is_ok() &&
+        (current.left, current.top, current.right-current.left, current.bottom-current.top)
+            == (position.0, position.1, size.0, size.1) { return; }
+    let _ = SetWindowPos(hwnd, HWND_TOPMOST, position.0, position.1, size.0, size.1, SWP_NOACTIVATE);
 }
 
 /// Creates the overlay window and runs its message loop (blocking).
@@ -638,10 +659,11 @@ pub fn run_overlay(state: Arc<AppState>) {
 
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, (ex_style.0 | WS_EX_LAYERED.0) as isize);
 
-        position_overlay(hwnd, &state);
+        position_overlay(hwnd, &state, true);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         render(hwnd, &state);
-        SetTimer(hwnd, 1, 100, None);
+        SetTimer(hwnd, 1, 16, None);
+        SetTimer(hwnd, 2, 100, None);
 
         let mut msg = MSG::default();
         loop {

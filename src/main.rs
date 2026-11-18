@@ -17,9 +17,10 @@ mod state;
 mod update;
 mod ui;
 mod layout;
+mod movement;
 
 /// Версия, которую приложение сравнивает с тегом последнего релиза.
-pub const APP_VERSION: &str = "1.5.0";
+pub const APP_VERSION: &str = "1.5.1";
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
