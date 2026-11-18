@@ -157,7 +157,10 @@ pub fn launch_installer(path: &str) -> bool {
         .map(|e| e.eq_ignore_ascii_case("exe"))
         .unwrap_or(false)
     {
-        std::process::Command::new(path).spawn().is_ok()
+        std::process::Command::new(path)
+            .arg("--replace")
+            .spawn()
+            .is_ok()
     } else {
         std::process::Command::new("explorer")
             .arg(path)

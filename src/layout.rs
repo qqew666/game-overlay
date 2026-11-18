@@ -37,7 +37,7 @@ pub const SCALES: [u32; 6] = [40, 60, 80, 100, 125, 150];
 pub fn rect(action: Action) -> Rect {
     match action {
         Action::Mimi => Rect::new(36., 100., 216., 216.),
-        Action::Theme(i) => Rect::new(36. + i.min(2) as f32 * 73., 590., 68., 34.),
+        Action::Theme(i) => Rect::new(36. + i.min(4) as f32 * 43.5, 590., 40., 34.),
         Action::Glass => Rect::new(36., 634., 104., 36.),
         Action::Sound => Rect::new(148., 634., 104., 36.),
         Action::ToggleAutostart => Rect::new(292., 226., 636., 50.),
@@ -66,6 +66,8 @@ pub fn actions() -> Vec<Action> {
         Action::Theme(0),
         Action::Theme(1),
         Action::Theme(2),
+        Action::Theme(3),
+        Action::Theme(4),
         Action::Glass,
         Action::Sound,
     ]);

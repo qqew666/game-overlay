@@ -7,9 +7,11 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod appearance;
+mod artwork;
 mod autostart;
 mod draw;
 mod fps;
+mod instance;
 mod layout;
 mod log;
 mod movement;
@@ -21,7 +23,7 @@ mod ui;
 mod update;
 
 /// Версия, которую приложение сравнивает с тегом последнего релиза.
-pub const APP_VERSION: &str = "1.5.2";
+pub const APP_VERSION: &str = "1.5.3";
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -133,7 +135,7 @@ fn parse_args() -> Result<Options, String> {
             "--autostart-status" => autostart_status = true,
             "--tray-quiet" => tray_quiet = true,
             // Accepted and ignored: kept so old shortcuts keep working.
-            "--elevated" | "--panel" => {}
+            "--elevated" | "--replace" | "--panel" => {}
             other => return Err(format!("unknown option: {other}")),
         }
         i += 1;
@@ -203,6 +205,29 @@ fn main() {
         }
     }
 
+    // Older updaters launch from this directory without the replacement flag.
+    let legacy_update = std::env::current_exe()
+        .ok()
+        .and_then(|path| {
+            path.parent()
+                .and_then(|p| p.file_name())
+                .map(|p| p.to_owned())
+        })
+        .map(|name| {
+            name.to_string_lossy()
+                .eq_ignore_ascii_case("GameOverlay-update")
+        })
+        .unwrap_or(false);
+    let handoff =
+        legacy_update || std::env::args().any(|arg| arg == "--elevated" || arg == "--replace");
+    let _instance = match instance::enter(handoff) {
+        Ok(Some(instance)) => instance,
+        Ok(None) => return,
+        Err(error) => {
+            crate::vlog!("Cannot establish single instance: {error}");
+            return;
+        }
+    };
     let state = AppState::new(opts.targets.clone());
     state.follow_window.store(!opts.fixed, Ordering::Relaxed);
     state.verbose.store(opts.verbose, Ordering::Relaxed);

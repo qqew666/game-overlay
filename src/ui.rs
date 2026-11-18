@@ -95,7 +95,12 @@ fn control(g: *mut GpGraphics, ctx: &PanelCtx, a: Action, label: &str, selected:
         draw::stroke(g, p, draw::C_ACCENT, 2.);
         draw::path_free(p);
     }
-    text(g, label, 12., true, draw::C_TEXT, r, ALIGN_CENTER);
+    let label_size = if matches!(a, Action::Theme(_)) {
+        9.5
+    } else {
+        12.0
+    };
+    text(g, label, label_size, true, draw::C_TEXT, r, ALIGN_CENTER);
 }
 unsafe fn paint(hwnd: HWND) {
     draw::gdiplus_init();
@@ -121,7 +126,7 @@ unsafe fn paint(hwnd: HWND) {
                 rc.bottom as f32,
                 0.,
                 if crate::appearance::NATIVE_GLASS.load(Ordering::Relaxed) {
-                    argb(225, 246, 238, 224)
+                    argb(240, 246, 238, 224)
                 } else {
                     draw::C_BG
                 },
@@ -153,7 +158,10 @@ unsafe fn paint(hwnd: HWND) {
                 draw::stroke(g, p, draw::C_ACCENT, 2.);
                 draw::path_free(p);
             }
-            for (i, label) in ["Беж", "Роза", "Шалфей"].iter().enumerate() {
+            for (i, label) in ["Беж", "Роза", "Мята", "Белая", "Тёмная"]
+                .iter()
+                .enumerate()
+            {
                 control(
                     g,
                     ctx,
@@ -482,11 +490,12 @@ fn elevate(state: &AppState) {
         let exe = std::env::current_exe().unwrap_or_default();
         let exe_w = wide(&exe.display().to_string());
         let verb = wide("runas");
+        let parameters = wide("--elevated");
         let result = windows::Win32::UI::Shell::ShellExecuteW(
             HWND(std::ptr::null_mut()),
             PCWSTR(verb.as_ptr()),
             PCWSTR(exe_w.as_ptr()),
-            PCWSTR::null(),
+            PCWSTR(parameters.as_ptr()),
             PCWSTR::null(),
             SW_SHOWNORMAL,
         );
@@ -503,22 +512,14 @@ fn perform(ctx: &mut PanelCtx, action: Action) {
     let st = ctx.state.clone();
     match action {
         Action::Mimi => unsafe {
-            let url = wide("https://rule34.gg/post?id=11674366");
-            let result = windows::Win32::UI::Shell::ShellExecuteW(
-                ctx.hwnd,
-                PCWSTR::null(),
-                PCWSTR(url.as_ptr()),
-                PCWSTR::null(),
-                PCWSTR::null(),
-                SW_SHOWNORMAL,
-            );
-            if result.0 as isize <= 32 {
-                ctx.state.set_notice("Не удалось открыть страницу арта");
-            }
+            crate::artwork::show(ctx.hwnd);
         },
         Action::Theme(theme) => {
             crate::appearance::THEME.store(theme, Ordering::Relaxed);
             crate::settings::save_preference("Theme", theme);
+            unsafe {
+                crate::appearance::apply_glass(ctx.hwnd);
+            }
         }
         Action::Glass => {
             let enabled = !crate::appearance::GLASS.fetch_xor(true, Ordering::Relaxed);
@@ -813,7 +814,7 @@ unsafe extern "system" fn wnd_proc(
         }
         WM_CLOSE => {
             if let Some(ctx) = ctx_of(hwnd) {
-                perform(ctx, Action::HideToTray);
+                perform(ctx, Action::Quit);
             }
             LRESULT(0)
         }
@@ -961,7 +962,7 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
 
         crate::appearance::apply_glass(hwnd);
         // Title bar and rounded corners.
-        let dark: u32 = 0;
+        let dark: u32 = (crate::appearance::THEME.load(Ordering::Relaxed) == 4) as u32;
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWINDOWATTRIBUTE(20),

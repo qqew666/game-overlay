@@ -1,3 +1,13 @@
+# 1.5.3
+
+- Keep one resident instance and restore its existing panel on repeated launches.
+- Main window Close now exits the app and its overlay; the explicit tray button keeps the session alive.
+- Preserve explicit elevation and updater handoff paths.
+- Display the user-provided artwork in a reusable, resizable in-process viewer with independent close and Escape handling.
+- Ignore owned application windows while following the active application.
+- Add white and dark themes, persistent selection and theme-aware title bar.
+- Change the native glass backdrop to Mica with a softer tint and improve palette button labels.
+
 # 1.5.2
 
 - Embedded beige application icon, also used by the panel and tray.

@@ -1,3 +1,19 @@
+# 1.5.3 verification
+
+Windows x64 release cross-build and six layout/movement tests passed.
+A native Win32 helper and X11 UI input were used with the actual EXE in Wine 10.
+
+- Simultaneous startup created one resident process, panel and overlay.
+- Repeated launch preserved both HWNDs and process IDs for the panel and overlay.
+- Launch from tray restored the same resident instance.
+- White and dark themes repainted and persisted their registry values.
+- Clicking Mimi created one artwork window in the same process and reused it on subsequent clicks.
+- Closing the artwork kept the panel alive; reopening worked.
+- Main WM_CLOSE removed the panel, overlay and owned artwork window.
+- A fresh launch after shutdown successfully released/reacquired the instance guard.
+
+Mica rendering, theme title bars and UAC elevation still require a native Windows check. The original user-provided image is embedded unchanged. Applications and installers are not attached to the GitHub release, as requested.
+
 # 1.5.2 verification
 
 Windows x64 release cross-build passed, including the embedded icon resource (.rsrc).

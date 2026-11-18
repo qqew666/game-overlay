@@ -11,7 +11,7 @@ pub static NATIVE_GLASS: AtomicBool = AtomicBool::new(false);
 pub static SOUND: AtomicBool = AtomicBool::new(true);
 pub fn init() {
     THEME.store(
-        crate::settings::load_preference("Theme", 0).min(2),
+        crate::settings::load_preference("Theme", 0).min(4),
         Ordering::Relaxed,
     );
     GLASS.store(
@@ -28,6 +28,78 @@ pub fn tint(color: u32) -> u32 {
     let r = (color >> 16) & 255;
     let g = (color >> 8) & 255;
     let b = color & 255;
+    let theme = THEME.load(Ordering::Relaxed);
+    if theme >= 3 {
+        let rgb = color & 0xffffff;
+        let dark = theme == 4;
+        let mapped = match rgb {
+            0xf6eee0 => {
+                if dark {
+                    0x151820
+                } else {
+                    0xf8f9fb
+                }
+            }
+            0xfffaf1 => {
+                if dark {
+                    0x252b36
+                } else {
+                    0xffffff
+                }
+            }
+            0xebdbc4 => {
+                if dark {
+                    0x1d222c
+                } else {
+                    0xebedf2
+                }
+            }
+            0x412f25 => {
+                if dark {
+                    0xf0f2f7
+                } else {
+                    0x20242a
+                }
+            }
+            0x755f4d => {
+                if dark {
+                    0xb6becd
+                } else {
+                    0x59616d
+                }
+            }
+            0xdecdb6 => {
+                if dark {
+                    0x454f60
+                } else {
+                    0xcbd1db
+                }
+            }
+            0x895b3c => {
+                if dark {
+                    0xc8b69b
+                } else {
+                    0x596986
+                }
+            }
+            0xd7bd9c | 0xe8d2b5 => {
+                if dark {
+                    0x4b566a
+                } else {
+                    0xdce3ef
+                }
+            }
+            0xefe1cc => {
+                if dark {
+                    0x343e50
+                } else {
+                    0xe8edf5
+                }
+            }
+            _ => rgb,
+        };
+        return a | mapped;
+    }
     if r < g || g < b {
         return color;
     }
@@ -50,7 +122,14 @@ pub fn click() {
 }
 pub unsafe fn apply_glass(hwnd: HWND) {
     let enabled = GLASS.load(Ordering::Relaxed);
-    let backdrop: u32 = if enabled { 4 } else { 1 };
+    let dark: u32 = (THEME.load(Ordering::Relaxed) == 4) as u32;
+    let _ = DwmSetWindowAttribute(
+        hwnd,
+        windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(20),
+        &dark as *const _ as *const _,
+        4,
+    );
+    let backdrop: u32 = if enabled { 2 } else { 1 };
     let available = DwmSetWindowAttribute(
         hwnd,
         windows::Win32::Graphics::Dwm::DWMWINDOWATTRIBUTE(38),

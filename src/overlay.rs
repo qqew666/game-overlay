@@ -605,7 +605,11 @@ unsafe fn position_overlay(hwnd: HWND, st: &AppState, snap: bool) {
     let foreground = GetForegroundWindow();
     let panel = HWND(st.panel_hwnd.load(Ordering::Relaxed) as *mut _);
     let following = st.follow_window.load(Ordering::Relaxed);
-    let own_window = foreground == panel || foreground == hwnd;
+    let mut foreground_process = 0;
+    GetWindowThreadProcessId(foreground, Some(&mut foreground_process));
+    let own_window = foreground == panel
+        || foreground == hwnd
+        || foreground_process == windows::Win32::System::Threading::GetCurrentProcessId();
     let anchor = if following
         && !foreground.is_invalid()
         && !own_window
