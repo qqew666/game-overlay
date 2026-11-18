@@ -11,6 +11,10 @@ pub enum Action {
     HideToTray,
     CheckUpdate,
     Quit,
+    Mimi,
+    Theme(u32),
+    Glass,
+    Sound,
 }
 #[derive(Clone, Copy, Debug)]
 pub struct Rect {
@@ -29,15 +33,19 @@ impl Rect {
 }
 pub const WIDTH: i32 = 960;
 pub const HEIGHT: i32 = 760;
-pub const SCALES: [u32; 4] = [80, 100, 125, 150];
+pub const SCALES: [u32; 6] = [40, 60, 80, 100, 125, 150];
 pub fn rect(action: Action) -> Rect {
     match action {
+        Action::Mimi => Rect::new(36., 100., 216., 216.),
+        Action::Theme(i) => Rect::new(36. + i.min(2) as f32 * 73., 590., 68., 34.),
+        Action::Glass => Rect::new(36., 634., 104., 36.),
+        Action::Sound => Rect::new(148., 634., 104., 36.),
         Action::ToggleAutostart => Rect::new(292., 226., 636., 50.),
         Action::ToggleFollow => Rect::new(292., 284., 636., 50.),
         Action::ToggleOverlay => Rect::new(292., 342., 636., 50.),
         Action::Scale(pct) => {
             let i = SCALES.iter().position(|v| *v == pct).unwrap_or(1);
-            Rect::new(292. + i as f32 * 162., 440., 150., 42.)
+            Rect::new(292. + i as f32 * 108., 440., 96., 42.)
         }
         Action::PreviousTarget => Rect::new(292., 526., 48., 44.),
         Action::NextTarget => Rect::new(880., 526., 48., 44.),
@@ -53,6 +61,14 @@ pub fn actions() -> Vec<Action> {
         Action::ToggleFollow,
         Action::ToggleOverlay,
     ];
+    a.extend([
+        Action::Mimi,
+        Action::Theme(0),
+        Action::Theme(1),
+        Action::Theme(2),
+        Action::Glass,
+        Action::Sound,
+    ]);
     a.extend(SCALES.map(Action::Scale));
     a.extend([
         Action::PreviousTarget,
@@ -106,7 +122,7 @@ mod tests {
             (310., 510.),
             (500., 620.),
             (600., 648.),
-            (40., 100.),
+            (40., 90.),
         ] {
             assert_eq!(hit_test(x, y), None);
         }

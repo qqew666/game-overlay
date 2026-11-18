@@ -1,3 +1,15 @@
+# 1.5.2
+
+- Embedded beige application icon, also used by the panel and tray.
+- Three persisted color palettes and native Windows system backdrop with fallback.
+- Asynchronous click audio with a saved mute toggle.
+- Added 40% and 60% overlay scales with matching persistence bounds.
+- Default ping target selection has three endpoints; explicit CLI targets remain supported.
+- F2/F3 work through fallback polling when global registration fails.
+- Discard an old ping measurement after changing the target.
+- Clickable Mimi portrait opens the user-specified art page in the system browser.
+- Compact palette and scale controls share pointer/keyboard layout definitions.
+
 # 1.5.1
 
 - Follow movement updates every 16 ms with time-based smoothing; metrics continue to redraw every 100 ms.

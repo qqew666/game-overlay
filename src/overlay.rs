@@ -10,8 +10,8 @@ use std::sync::Arc;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{COLORREF, HINSTANCE, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, EndPaint, GetMonitorInfoW, MonitorFromWindow, MONITORINFO,
-    MONITOR_DEFAULTTONEAREST, AC_SRC_ALPHA, BLENDFUNCTION, HDC, PAINTSTRUCT,
+    BeginPaint, EndPaint, GetMonitorInfoW, MonitorFromWindow, AC_SRC_ALPHA, BLENDFUNCTION, HDC,
+    MONITORINFO, MONITOR_DEFAULTTONEAREST, PAINTSTRUCT,
 };
 use windows::Win32::Graphics::GdiPlus::{
     GdipCreateFromHDC, GdipDeleteGraphics, GdipScaleWorldTransform, GdipSetSmoothingMode,
@@ -20,7 +20,8 @@ use windows::Win32::Graphics::GdiPlus::{
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT, VK_END, VK_F1, VK_F2, VK_F3, VK_F4, VK_F6,
+    GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT, VK_END, VK_F1, VK_F2, VK_F3,
+    VK_F4, VK_F6,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -31,6 +32,26 @@ use crate::state::{AppState, SOURCE_ETW};
 // Geometry
 // ---------------------------------------------------------------------------
 
+static FALLBACK_KEYS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static PRESSED_KEYS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+unsafe fn poll_target_keys(state: &AppState) {
+    let mask = FALLBACK_KEYS.load(Ordering::Relaxed);
+    if mask == 0 {
+        return;
+    }
+    let mut pressed = 0;
+    for (bit, key, delta) in [(1, VK_F2, 1), (2, VK_F3, -1)] {
+        if mask & bit != 0 && GetAsyncKeyState(key.0 as i32) < 0 {
+            pressed |= bit;
+            if PRESSED_KEYS.load(Ordering::Relaxed) & bit == 0 {
+                state.cycle_target(delta);
+                crate::appearance::click();
+            }
+        }
+    }
+    PRESSED_KEYS.store(pressed, Ordering::Relaxed);
+}
+
 const CARD_W: f32 = 400.0;
 const CARD_H: f32 = 190.0;
 const SHADOW: f32 = 10.0;
@@ -39,7 +60,7 @@ const WIN_H: i32 = 210;
 const RADIUS: f32 = 22.0;
 const NOTICE_SECS: f32 = 2.5;
 /// Range the user can pick in the panel; the registry is clamped to it too.
-const SCALE_MIN: f32 = 0.6;
+const SCALE_MIN: f32 = 0.4;
 const SCALE_MAX: f32 = 2.0;
 
 fn current_scale(st: &AppState) -> f32 {
@@ -115,7 +136,16 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
         CARD_W,
         CARD_H,
         RADIUS,
-        argb(248, 246, 238, 224),
+        argb(
+            if crate::appearance::GLASS.load(Ordering::Relaxed) {
+                205
+            } else {
+                248
+            },
+            246,
+            238,
+            224,
+        ),
         draw::C_BORDER,
     );
 
@@ -475,6 +505,9 @@ unsafe extern "system" fn wnd_proc(
                         let _ = DestroyWindow(hwnd);
                         return LRESULT(0);
                     }
+                    if wparam.0 == 1 {
+                        poll_target_keys(st);
+                    }
                     let want = st.visible.load(Ordering::Relaxed);
                     let shown = IsWindowVisible(hwnd).as_bool();
                     if want && !shown {
@@ -506,8 +539,14 @@ unsafe extern "system" fn wnd_proc(
                                 "оверлей: выкл"
                             });
                         }
-                        2 => st.cycle_target(1),
-                        3 => st.cycle_target(-1),
+                        2 => {
+                            crate::appearance::click();
+                            st.cycle_target(1);
+                        }
+                        3 => {
+                            crate::appearance::click();
+                            st.cycle_target(-1);
+                        }
                         4 => {
                             let v = !st.follow_window.load(Ordering::Relaxed);
                             st.follow_window.store(v, Ordering::Relaxed);
@@ -540,7 +579,9 @@ unsafe extern "system" fn wnd_proc(
         WM_DESTROY => {
             let _ = KillTimer(hwnd, 1);
             let _ = KillTimer(hwnd, 2);
-            for id in 1..=6 { let _ = UnregisterHotKey(hwnd, id); }
+            for id in 1..=6 {
+                let _ = UnregisterHotKey(hwnd, id);
+            }
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppState;
             SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0);
             if !ptr.is_null() {
@@ -565,10 +606,25 @@ unsafe fn position_overlay(hwnd: HWND, st: &AppState, snap: bool) {
     let panel = HWND(st.panel_hwnd.load(Ordering::Relaxed) as *mut _);
     let following = st.follow_window.load(Ordering::Relaxed);
     let own_window = foreground == panel || foreground == hwnd;
-    let anchor = if following && !foreground.is_invalid() && !own_window
-        && !IsIconic(foreground).as_bool() { foreground } else { hwnd };
-    let mut monitor = MONITORINFO { cbSize: std::mem::size_of::<MONITORINFO>() as u32, ..Default::default() };
-    if !GetMonitorInfoW(MonitorFromWindow(anchor, MONITOR_DEFAULTTONEAREST), &mut monitor).as_bool() {
+    let anchor = if following
+        && !foreground.is_invalid()
+        && !own_window
+        && !IsIconic(foreground).as_bool()
+    {
+        foreground
+    } else {
+        hwnd
+    };
+    let mut monitor = MONITORINFO {
+        cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    if !GetMonitorInfoW(
+        MonitorFromWindow(anchor, MONITOR_DEFAULTTONEAREST),
+        &mut monitor,
+    )
+    .as_bool()
+    {
         return;
     }
     let work = monitor.rcWork;
@@ -592,12 +648,29 @@ unsafe fn position_overlay(hwnd: HWND, st: &AppState, snap: bool) {
         motion.1 = now;
         crate::movement::constrain(motion.0.update(target, seconds, snap), size, area)
     });
-    if let Ok(mut current) = st.pos.lock() { *current = position; }
+    if let Ok(mut current) = st.pos.lock() {
+        *current = position;
+    }
     let mut current = windows::Win32::Foundation::RECT::default();
-    if GetWindowRect(hwnd, &mut current).is_ok() &&
-        (current.left, current.top, current.right-current.left, current.bottom-current.top)
-            == (position.0, position.1, size.0, size.1) { return; }
-    let _ = SetWindowPos(hwnd, HWND_TOPMOST, position.0, position.1, size.0, size.1, SWP_NOACTIVATE);
+    if GetWindowRect(hwnd, &mut current).is_ok()
+        && (
+            current.left,
+            current.top,
+            current.right - current.left,
+            current.bottom - current.top,
+        ) == (position.0, position.1, size.0, size.1)
+    {
+        return;
+    }
+    let _ = SetWindowPos(
+        hwnd,
+        HWND_TOPMOST,
+        position.0,
+        position.1,
+        size.0,
+        size.1,
+        SWP_NOACTIVATE,
+    );
 }
 
 /// Creates the overlay window and runs its message loop (blocking).
@@ -653,6 +726,12 @@ pub fn run_overlay(state: Arc<AppState>) {
         ];
         for (id, vk) in hotkeys {
             if let Err(e) = RegisterHotKey(hwnd, id, MOD_NOREPEAT, vk) {
+                if id == 2 {
+                    FALLBACK_KEYS.fetch_or(1, Ordering::Relaxed);
+                }
+                if id == 3 {
+                    FALLBACK_KEYS.fetch_or(2, Ordering::Relaxed);
+                }
                 crate::vlog!("[hotkey] id {id} (vk {vk:#x}) failed: {e:?}");
             }
         }

@@ -81,6 +81,15 @@ fn control(g: *mut GpGraphics, ctx: &PanelCtx, a: Action, label: &str, selected:
         draw::C_CARD
     };
     card(g, r, bg);
+    draw::line(
+        g,
+        r.x + 14.,
+        r.y + 2.,
+        r.x + r.w - 14.,
+        r.y + 2.,
+        argb(150, 255, 255, 255),
+        1.,
+    );
     if ctx.focus == Some(a) {
         let p = draw::rounded_rect(r.x + 3., r.y + 3., r.w - 6., r.h - 6., 11.);
         draw::stroke(g, p, draw::C_ACCENT, 2.);
@@ -104,7 +113,19 @@ unsafe fn paint(hwnd: HWND) {
         if GdipCreateFromHDC(surface.dc(), &mut g) == Status(0) && !g.is_null() {
             let _ = GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
             let _ = GdipSetTextRenderingHint(g, TextRenderingHintAntiAliasGridFit);
-            draw::round_fill(g, 0., 0., rc.right as f32, rc.bottom as f32, 0., draw::C_BG);
+            draw::round_fill(
+                g,
+                0.,
+                0.,
+                rc.right as f32,
+                rc.bottom as f32,
+                0.,
+                if crate::appearance::NATIVE_GLASS.load(Ordering::Relaxed) {
+                    argb(225, 246, 238, 224)
+                } else {
+                    draw::C_BG
+                },
+            );
             let scale = (rc.right as f32 / PANEL_W as f32).min(rc.bottom as f32 / PANEL_H as f32);
             let _ = GdipScaleWorldTransform(g, scale, scale, MatrixOrderAppend);
             card(g, Rect::new(20., 20., 248., 720.), argb(255, 235, 219, 196));
@@ -127,6 +148,34 @@ unsafe fn paint(hwnd: HWND) {
                 ALIGN_LEFT,
             );
             draw::draw_mimi(g, 36., 100., 216.);
+            if ctx.hover == Some(Action::Mimi) {
+                let p = draw::rounded_rect(36., 100., 216., 216., 8.);
+                draw::stroke(g, p, draw::C_ACCENT, 2.);
+                draw::path_free(p);
+            }
+            for (i, label) in ["Беж", "Роза", "Шалфей"].iter().enumerate() {
+                control(
+                    g,
+                    ctx,
+                    Action::Theme(i as u32),
+                    label,
+                    crate::appearance::THEME.load(Ordering::Relaxed) == i as u32,
+                );
+            }
+            control(
+                g,
+                ctx,
+                Action::Glass,
+                "Стекло",
+                crate::appearance::GLASS.load(Ordering::Relaxed),
+            );
+            control(
+                g,
+                ctx,
+                Action::Sound,
+                "Звук",
+                crate::appearance::SOUND.load(Ordering::Relaxed),
+            );
             text(
                 g,
                 "Mimi · art by Typh",
@@ -162,7 +211,7 @@ unsafe fn paint(hwnd: HWND) {
                     11.,
                     false,
                     draw::C_DIM,
-                    Rect::new(36., 422. + i as f32 * 30., 216., 24.),
+                    Rect::new(36., 422. + i as f32 * 25., 216., 24.),
                     ALIGN_LEFT,
                 );
             }
@@ -450,8 +499,38 @@ fn elevate(state: &AppState) {
 }
 
 fn perform(ctx: &mut PanelCtx, action: Action) {
+    crate::appearance::click();
     let st = ctx.state.clone();
     match action {
+        Action::Mimi => unsafe {
+            let url = wide("https://rule34.gg/post?id=11674366");
+            let result = windows::Win32::UI::Shell::ShellExecuteW(
+                ctx.hwnd,
+                PCWSTR::null(),
+                PCWSTR(url.as_ptr()),
+                PCWSTR::null(),
+                PCWSTR::null(),
+                SW_SHOWNORMAL,
+            );
+            if result.0 as isize <= 32 {
+                ctx.state.set_notice("Не удалось открыть страницу арта");
+            }
+        },
+        Action::Theme(theme) => {
+            crate::appearance::THEME.store(theme, Ordering::Relaxed);
+            crate::settings::save_preference("Theme", theme);
+        }
+        Action::Glass => {
+            let enabled = !crate::appearance::GLASS.fetch_xor(true, Ordering::Relaxed);
+            crate::settings::save_preference("Glass", enabled as u32);
+            unsafe {
+                crate::appearance::apply_glass(ctx.hwnd);
+            }
+        }
+        Action::Sound => {
+            let enabled = !crate::appearance::SOUND.fetch_xor(true, Ordering::Relaxed);
+            crate::settings::save_preference("Sound", enabled as u32);
+        }
         Action::ToggleAutostart => toggle_autostart(&st),
         Action::ToggleFollow => {
             let v = !st.follow_window.load(Ordering::Relaxed);
@@ -520,7 +599,11 @@ unsafe fn tray_add(ctx: &mut PanelCtx) {
     nid.uID = 1;
     nid.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
     nid.uCallbackMessage = TRAY_MSG;
-    nid.hIcon = LoadIconW(HINSTANCE(std::ptr::null_mut()), IDI_APPLICATION).unwrap_or_default();
+    nid.hIcon = LoadIconW(
+        GetModuleHandleW(None).unwrap_or_default(),
+        PCWSTR(1usize as *const u16),
+    )
+    .unwrap_or_default();
     let tip = "GameOverlay";
     for (i, ch) in tip.encode_utf16().take(127).enumerate() {
         nid.szTip[i] = ch;
@@ -829,6 +912,8 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
             hCursor: LoadCursorW(HINSTANCE(std::ptr::null_mut()), IDC_ARROW).unwrap_or_default(),
             ..Default::default()
         };
+        let mut wc = wc;
+        wc.hIcon = LoadIconW(hinstance, PCWSTR(1usize as *const u16)).unwrap_or_default();
         RegisterClassW(&wc);
 
         let style = WS_OVERLAPPEDWINDOW & !WS_MAXIMIZEBOX & !WS_THICKFRAME;
@@ -874,7 +959,8 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
             Err(_) => return,
         };
 
-        // Dark title bar + rounded corners.
+        crate::appearance::apply_glass(hwnd);
+        // Title bar and rounded corners.
         let dark: u32 = 0;
         let _ = DwmSetWindowAttribute(
             hwnd,

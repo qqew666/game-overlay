@@ -6,21 +6,22 @@
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod appearance;
 mod autostart;
 mod draw;
 mod fps;
+mod layout;
 mod log;
+mod movement;
 mod overlay;
 mod ping;
 mod settings;
 mod state;
-mod update;
 mod ui;
-mod layout;
-mod movement;
+mod update;
 
 /// Версия, которую приложение сравнивает с тегом последнего релиза.
-pub const APP_VERSION: &str = "1.5.1";
+pub const APP_VERSION: &str = "1.5.2";
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -138,7 +139,20 @@ fn parse_args() -> Result<Options, String> {
         i += 1;
     }
 
-    let targets = targets.unwrap_or_else(|| vec![Target::new(&host, port, mode)]);
+    let custom = args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--host" | "--port" | "--mode"));
+    let targets = targets.unwrap_or_else(|| {
+        if custom {
+            vec![Target::new(&host, port, mode)]
+        } else {
+            vec![
+                Target::new("1.1.1.1", 443, mode),
+                Target::new("8.8.8.8", 53, mode),
+                Target::new("9.9.9.9", 443, mode),
+            ]
+        }
+    });
     Ok(Options {
         targets,
         fixed,
@@ -161,11 +175,16 @@ fn main() {
     };
 
     log::init(opts.verbose);
+    appearance::init();
 
     if opts.autostart_status {
         crate::vlog!(
             "autostart: {}",
-            if autostart::is_enabled() { "enabled" } else { "disabled" }
+            if autostart::is_enabled() {
+                "enabled"
+            } else {
+                "disabled"
+            }
         );
         if !opts.verbose {
             return;
@@ -173,7 +192,11 @@ fn main() {
     }
 
     if let Some(enable) = opts.autostart {
-        let result = if enable { autostart::enable() } else { autostart::disable() };
+        let result = if enable {
+            autostart::enable()
+        } else {
+            autostart::disable()
+        };
         match result {
             Ok(()) => crate::vlog!("autostart {}", if enable { "enabled" } else { "disabled" }),
             Err(e) => crate::vlog!("autostart failed: {e}"),
@@ -183,7 +206,9 @@ fn main() {
     let state = AppState::new(opts.targets.clone());
     state.follow_window.store(!opts.fixed, Ordering::Relaxed);
     state.verbose.store(opts.verbose, Ordering::Relaxed);
-    state.autostart.store(autostart::is_enabled(), Ordering::Relaxed);
+    state
+        .autostart
+        .store(autostart::is_enabled(), Ordering::Relaxed);
     state
         .overlay_scale
         .store(settings::load_scale(), Ordering::Relaxed);
@@ -193,42 +218,44 @@ fn main() {
         let state = state.clone();
         let targets = opts.targets.clone();
         let verbose = opts.verbose;
-        std::thread::spawn(move || {
-            loop {
-                if state.should_quit.load(Ordering::Relaxed) {
-                    break;
-                }
-                if targets.is_empty() {
-                    break;
-                }
-                let idx = state.target_index.load(Ordering::Relaxed) % targets.len();
-                let target = &targets[idx];
-
-                if let Ok(mut name) = state.target_name.lock() {
-                    *name = target.label();
-                }
-
-                match ping::probe(target, Duration::from_millis(1500)).rtt_ms {
-                    Some(ms) => {
-                        let deci = (ms * 10.0).round() as i32;
-                        state.ping_deci.store(deci, Ordering::Relaxed);
-                        state.ping_lost.store(false, Ordering::Relaxed);
-                        state.push_ping_sample(deci);
-                        if verbose {
-                            crate::vlog!("[ping] {} -> {:.1} ms", target.label(), ms);
-                        }
-                    }
-                    None => {
-                        state.ping_deci.store(-1, Ordering::Relaxed);
-                        state.ping_lost.store(true, Ordering::Relaxed);
-                        state.push_ping_sample(-1);
-                        if verbose {
-                            crate::vlog!("[ping] {} -> timeout", target.label());
-                        }
-                    }
-                }
-                std::thread::sleep(Duration::from_millis(1000));
+        std::thread::spawn(move || loop {
+            if state.should_quit.load(Ordering::Relaxed) {
+                break;
             }
+            if targets.is_empty() {
+                break;
+            }
+            let idx = state.target_index.load(Ordering::Relaxed) % targets.len();
+            let target = &targets[idx];
+
+            if let Ok(mut name) = state.target_name.lock() {
+                *name = target.label();
+            }
+
+            let measured = ping::probe(target, Duration::from_millis(1500)).rtt_ms;
+            if state.target_index.load(Ordering::Relaxed) % targets.len() != idx {
+                continue;
+            }
+            match measured {
+                Some(ms) => {
+                    let deci = (ms * 10.0).round() as i32;
+                    state.ping_deci.store(deci, Ordering::Relaxed);
+                    state.ping_lost.store(false, Ordering::Relaxed);
+                    state.push_ping_sample(deci);
+                    if verbose {
+                        crate::vlog!("[ping] {} -> {:.1} ms", target.label(), ms);
+                    }
+                }
+                None => {
+                    state.ping_deci.store(-1, Ordering::Relaxed);
+                    state.ping_lost.store(true, Ordering::Relaxed);
+                    state.push_ping_sample(-1);
+                    if verbose {
+                        crate::vlog!("[ping] {} -> timeout", target.label());
+                    }
+                }
+            }
+            std::thread::sleep(Duration::from_millis(1000));
         });
     }
 

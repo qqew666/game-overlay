@@ -1,3 +1,12 @@
+# 1.5.2 verification
+
+Windows x64 release cross-build passed, including the embedded icon resource (.rsrc).
+Six existing layout and movement tests pass. MSI installation, upgrade from 1.5.1 and uninstallation passed under Wine.
+The actual EXE was tested under Wine 10. F2 changed the ping target and F3 restored it. This was repeated with both keys reserved by a second application, confirming the registration-failure fallback.
+All six scale values were checked through UI clicks and registry queries. All three palettes, glass toggle, audio toggle, persistence and Exit were checked. Click audio is embedded WAV data and uses asynchronous WinMM playback.
+
+Native Windows 11 backdrop appearance and audible output require a real Windows desktop and audio device. The supplied art link opens externally; its destination was not downloaded into the application. The separate unspecified application-switch button could not be reproduced without its name or shortcut.
+
 # 1.5.1 verification
 
 Release cross-build for Windows x64 succeeded with Rust 1.100.0 and MinGW GCC 14.

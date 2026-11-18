@@ -15,7 +15,7 @@ const VALUE_SCALE: PCWSTR = w!("OverlayScale");
 
 pub const DEFAULT_SCALE: u32 = 100;
 /// Anything outside this range in the registry is treated as corrupt.
-const SCALE_MIN: u32 = 60;
+const SCALE_MIN: u32 = 40;
 const SCALE_MAX: u32 = 200;
 
 pub fn load_scale() -> u32 {
@@ -54,5 +54,48 @@ pub fn save_scale(scale: u32) {
         let bytes = scale.to_ne_bytes();
         let _ = RegSetValueExW(key, VALUE_SCALE, 0, REG_DWORD, Some(&bytes));
         let _ = RegCloseKey(key);
+    }
+}
+
+pub fn load_preference(name: &str, fallback: u32) -> u32 {
+    let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let mut key = HKEY::default();
+        if RegOpenKeyExW(HKEY_CURRENT_USER, SUBKEY, 0, KEY_QUERY_VALUE, &mut key) != ERROR_SUCCESS {
+            return fallback;
+        }
+        let mut value = 0u32;
+        let mut size = 4;
+        let mut kind = REG_DWORD;
+        let result = RegQueryValueExW(
+            key,
+            PCWSTR(name.as_ptr()),
+            None,
+            Some(&mut kind),
+            Some((&mut value as *mut u32).cast()),
+            Some(&mut size),
+        );
+        let _ = RegCloseKey(key);
+        if result == ERROR_SUCCESS && kind == REG_DWORD && size == 4 {
+            value
+        } else {
+            fallback
+        }
+    }
+}
+pub fn save_preference(name: &str, value: u32) {
+    let name: Vec<u16> = name.encode_utf16().chain(Some(0)).collect();
+    unsafe {
+        let mut key = HKEY::default();
+        if RegCreateKeyW(HKEY_CURRENT_USER, SUBKEY, &mut key) == ERROR_SUCCESS {
+            let _ = RegSetValueExW(
+                key,
+                PCWSTR(name.as_ptr()),
+                0,
+                REG_DWORD,
+                Some(&value.to_le_bytes()),
+            );
+            let _ = RegCloseKey(key);
+        }
     }
 }

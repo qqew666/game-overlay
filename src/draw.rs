@@ -167,7 +167,7 @@ pub fn fill(g: *mut GpGraphics, p: *mut GpPath, color: u32) {
     }
     unsafe {
         let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-        if GdipCreateSolidFill(color, &mut brush) == Status(0) && !brush.is_null() {
+        if GdipCreateSolidFill(crate::appearance::tint(color), &mut brush) == Status(0) && !brush.is_null() {
             let _ = GdipFillPath(g, brush.cast(), p);
             let _ = GdipDeleteBrush(brush.cast());
         }
@@ -180,7 +180,7 @@ pub fn stroke(g: *mut GpGraphics, p: *mut GpPath, color: u32, width: f32) {
     }
     unsafe {
         let mut pen: *mut GpPen = std::ptr::null_mut();
-        if GdipCreatePen1(color, width, Unit(2), &mut pen) == Status(0) && !pen.is_null() {
+        if GdipCreatePen1(crate::appearance::tint(color), width, Unit(2), &mut pen) == Status(0) && !pen.is_null() {
             let _ = GdipDrawPath(g, pen, p);
             let _ = GdipDeletePen(pen);
         }
@@ -302,7 +302,7 @@ pub fn text_in(
         }
 
         let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-        let _ = GdipCreateSolidFill(color, &mut brush);
+        let _ = GdipCreateSolidFill(crate::appearance::tint(color), &mut brush);
 
         let mut fmt: *mut GpStringFormat = std::ptr::null_mut();
         let _ = GdipCreateStringFormat(0, 0, &mut fmt);
