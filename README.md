@@ -1,12 +1,10 @@
-# GameOverlay 1.5.2
+# GameOverlay 1.5.3 — файлы для скачивания
 
-Готовые файлы для самостоятельной публикации.
+- [Скачать GameOverlay.exe](https://github.com/qqew666/game-overlay/raw/refs/heads/codex/overlay-1.5.3-downloads/GameOverlay.exe)
+- [Скачать MSI-установщик](https://github.com/qqew666/game-overlay/raw/refs/heads/codex/overlay-1.5.3-downloads/GameOverlay-1.5.3-x64.msi)
+- [Полные исходники ZIP](https://github.com/qqew666/game-overlay/archive/refs/tags/v1.5.3.zip)
+- [SHA-256](SHA256SUMS.txt)
 
-- [GameOverlay.exe](https://github.com/qqew666/game-overlay/raw/refs/heads/codex/overlay-1.5.2-downloads/GameOverlay.exe)
-- [GameOverlay-1.5.2-x64.msi](https://github.com/qqew666/game-overlay/raw/refs/heads/codex/overlay-1.5.2-downloads/GameOverlay-1.5.2-x64.msi)
-- [Полные исходники ZIP](https://github.com/qqew666/game-overlay/archive/refs/tags/v1.5.2.zip)
-- [SHA256SUMS.txt](SHA256SUMS.txt)
+Версия для Windows 10/11 x64. EXE запускает приложение, MSI устанавливает его для текущего пользователя с ярлыками и автозапуском.
 
-Код приложения на Rust. Новые возможности — палитры, нативный стеклянный фон при поддержке Windows 11, настройки звука, масштабы от 40%, встроенная бежевая иконка и переключение целей пинга F2/F3 с обработкой конфликтов. Нажатие на Mimi открывает указанную пользователем страницу в браузере.
-
-Проверки и ограничения доступны в VERIFICATION.md исходников. На GitHub загружены ветки и тег v1.5.2, релиз пользователь публикует самостоятельно.
+Исходники соответствуют тегу v1.5.3, коммит 4155be4. Релиз GitHub содержит архивы исходников, готовые приложения размещены в этой отдельной ветке для скачивания из чата.
