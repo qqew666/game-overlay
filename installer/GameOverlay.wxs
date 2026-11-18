@@ -3,7 +3,7 @@
      xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
   <Package Name="GameOverlay"
            Manufacturer="Maklyxa"
-           Version="1.5.3.0"
+           Version="1.5.4.0"
            UpgradeCode="7C1B0D1A-3F4E-4A2B-9C55-9F1E0B2A6D31"
            Scope="perUser"
            Codepage="65001"

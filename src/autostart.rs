@@ -6,8 +6,8 @@
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_SUCCESS};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY,
-    HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
+    RegCloseKey, RegCreateKeyW, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ,
 };
 
 const RUN_KEY: PCWSTR = w!("Software\\Microsoft\\Windows\\CurrentVersion\\Run");
@@ -26,19 +26,17 @@ fn open_run_key(access: windows::Win32::System::Registry::REG_SAM_FLAGS) -> Opti
     }
 }
 
-/// Path of the running executable, quoted, as written into the Run value.
-fn command_line() -> Option<String> {
-    let path = std::env::current_exe().ok()?;
-    Some(format!("\"{}\" --tray-quiet", path.display()))
+/// Registers the running executable for the current user.
+pub fn enable() -> Result<(), String> {
+    let path = std::env::current_exe().map_err(|e| e.to_string())?;
+    enable_for(&path)
 }
 
-/// Registers the current executable for the current user.
-pub fn enable() -> Result<(), String> {
-    let cmd = command_line().ok_or("cannot resolve the executable path")?;
+/// Also used to migrate autostart away from a downloaded temporary executable.
+pub fn enable_for(path: &std::path::Path) -> Result<(), String> {
+    let cmd = format!("\"{}\" --tray-quiet", path.display());
     let mut key = HKEY::default();
-    let status = unsafe {
-        RegCreateKeyW(HKEY_CURRENT_USER, RUN_KEY, &mut key)
-    };
+    let status = unsafe { RegCreateKeyW(HKEY_CURRENT_USER, RUN_KEY, &mut key) };
     if status != ERROR_SUCCESS {
         return Err(format!("cannot create/open HKCU Run key: {status:?}"));
     }
@@ -46,7 +44,10 @@ pub fn enable() -> Result<(), String> {
     // REG_SZ must include the terminating NUL in the byte count.
     let wide: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
     let bytes = unsafe {
-        std::slice::from_raw_parts(wide.as_ptr().cast::<u8>(), wide.len() * std::mem::size_of::<u16>())
+        std::slice::from_raw_parts(
+            wide.as_ptr().cast::<u8>(),
+            wide.len() * std::mem::size_of::<u16>(),
+        )
     };
 
     let status = unsafe { RegSetValueExW(key, VALUE_NAME, 0, REG_SZ, Some(bytes)) };

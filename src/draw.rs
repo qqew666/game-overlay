@@ -138,7 +138,9 @@ pub fn rounded_rect(x: f32, y: f32, w: f32, h: f32, r: f32) -> *mut GpPath {
     }
     let d = (r * 2.0).min(w.min(h)).max(0.0);
     if d == 0.0 {
-        unsafe { let _ = GdipAddPathRectangle(p, x, y, w, h); }
+        unsafe {
+            let _ = GdipAddPathRectangle(p, x, y, w, h);
+        }
         return p;
     }
     unsafe {
@@ -167,7 +169,9 @@ pub fn fill(g: *mut GpGraphics, p: *mut GpPath, color: u32) {
     }
     unsafe {
         let mut brush: *mut GpSolidFill = std::ptr::null_mut();
-        if GdipCreateSolidFill(crate::appearance::tint(color), &mut brush) == Status(0) && !brush.is_null() {
+        if GdipCreateSolidFill(crate::appearance::tint(color), &mut brush) == Status(0)
+            && !brush.is_null()
+        {
             let _ = GdipFillPath(g, brush.cast(), p);
             let _ = GdipDeleteBrush(brush.cast());
         }
@@ -180,7 +184,9 @@ pub fn stroke(g: *mut GpGraphics, p: *mut GpPath, color: u32, width: f32) {
     }
     unsafe {
         let mut pen: *mut GpPen = std::ptr::null_mut();
-        if GdipCreatePen1(crate::appearance::tint(color), width, Unit(2), &mut pen) == Status(0) && !pen.is_null() {
+        if GdipCreatePen1(crate::appearance::tint(color), width, Unit(2), &mut pen) == Status(0)
+            && !pen.is_null()
+        {
             let _ = GdipDrawPath(g, pen, p);
             let _ = GdipDeletePen(pen);
         }
@@ -292,7 +298,9 @@ pub fn text_in(
         if status != Status(0) {
             status = GdipGetGenericFontFamilySansSerif(&mut family);
         }
-        if status != Status(0) { return; }
+        if status != Status(0) {
+            return;
+        }
 
         let style = if bold { 1 } else { 0 };
         let mut font: *mut GpFont = std::ptr::null_mut();
@@ -445,4 +453,133 @@ impl Drop for Surface {
             let _ = DeleteDC(self.mem);
         }
     }
+}
+
+/// A shaped vertical blend, reused for the glass body and its narrow edge reflections.
+fn glass_gradient(
+    g: *mut GpGraphics,
+    shape: *mut GpPath,
+    rect: RectF,
+    colors: &[u32],
+    positions: &[f32],
+) {
+    unsafe {
+        let mut brush = std::ptr::null_mut();
+        if GdipCreateLineBrushFromRect(
+            &rect,
+            colors[0],
+            *colors.last().unwrap(),
+            LinearGradientModeVertical,
+            WrapModeTileFlipXY,
+            &mut brush,
+        ) == Status(0)
+        {
+            let _ = GdipSetLinePresetBlend(
+                brush,
+                colors.as_ptr(),
+                positions.as_ptr(),
+                colors.len() as i32,
+            );
+            let _ = GdipFillPath(g, brush.cast(), shape);
+            let _ = GdipDeleteBrush(brush.cast());
+        }
+    }
+}
+
+/// Convex glass with a tinted body, soft elevation and paired refractive rims.
+pub fn glass_card(g: *mut GpGraphics, x: f32, y: f32, w: f32, h: f32, r: f32, base: u32) {
+    let r = r.min(w.min(h) / 2.);
+    let dark = crate::appearance::THEME.load(std::sync::atomic::Ordering::Relaxed) == 4;
+    for (spread, alpha) in [(5., 9), (3., 14), (1., 22)] {
+        round_fill(
+            g,
+            x - spread,
+            y + 3.,
+            w + spread * 2.,
+            h + spread,
+            r + spread,
+            argb(alpha, 30, 18, 8),
+        );
+    }
+    let shape = rounded_rect(x, y, w, h, r);
+    let color = crate::appearance::tint(base) & 0xffffff;
+    let tint = |alpha: u32| (alpha << 24) | color;
+    let colors = [
+        argb(if dark { 54 } else { 180 }, 255, 255, 255),
+        tint(210),
+        tint(158),
+        tint(188),
+        argb(if dark { 38 } else { 155 }, 255, 255, 255),
+    ];
+    glass_gradient(
+        g,
+        shape,
+        RectF {
+            X: x,
+            Y: y,
+            Width: w,
+            Height: h,
+        },
+        &colors,
+        &[0., 0.12, 0.48, 0.76, 1.],
+    );
+    stroke(
+        g,
+        shape,
+        argb(if dark { 115 } else { 205 }, 255, 255, 255),
+        1.4,
+    );
+    path_free(shape);
+    let inner = rounded_rect(x + 2., y + 2., w - 4., h - 4., (r - 2.).max(1.));
+    stroke(
+        g,
+        inner,
+        argb(if dark { 34 } else { 72 }, 255, 255, 255),
+        1.,
+    );
+    path_free(inner);
+    // Two curved open strokes emphasize the upper lip and lower refraction.
+    let lip = path();
+    unsafe {
+        let radius = (r - 2.).max(1.);
+        let diameter = radius * 2.;
+        let _ = GdipAddPathArc(lip, x + 2., y + 2., diameter, diameter, 185., 85.);
+        let _ = GdipAddPathLine(lip, x + r, y + 2., x + w - r, y + 2.);
+        let _ = GdipAddPathArc(
+            lip,
+            x + w - diameter - 2.,
+            y + 2.,
+            diameter,
+            diameter,
+            270.,
+            85.,
+        );
+    }
+    stroke(
+        g,
+        lip,
+        argb(if dark { 150 } else { 235 }, 255, 255, 255),
+        1.2,
+    );
+    path_free(lip);
+}
+
+pub fn glass_background(g: *mut GpGraphics, w: f32, h: f32) {
+    let shape = rounded_rect(0., 0., w, h, 0.);
+    let background = crate::appearance::tint(C_BG);
+    let accent = crate::appearance::tint(C_SOFT);
+    // A broad, subdued light field remains visible through translucent controls.
+    glass_gradient(
+        g,
+        shape,
+        RectF {
+            X: 0.,
+            Y: 0.,
+            Width: w,
+            Height: h,
+        },
+        &[background, accent, background],
+        &[0., 0.53, 1.],
+    );
+    path_free(shape);
 }

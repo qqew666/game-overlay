@@ -1,3 +1,14 @@
+# 1.5.4
+
+- Prefer MSI updates for durable installation.
+- Activate standalone updates at a stable per-user application path after the previous process exits.
+- Create/update Start Menu and existing desktop shortcuts and preserve enabled autostart at the permanent EXE.
+- Support cached EXEs launched by the 1.5.3 updater.
+- Isolate downloads into unique staging directories and publish completed package files after header validation.
+- Add shaped glass gradients, refractive edge highlights and soft shadows.
+- Rework the three settings rows with icons, larger switches and keyboard-only focus outlines.
+- Clarify update status for source-only releases.
+
 # 1.5.3
 
 - Keep one resident instance and restore its existing panel on repeated launches.

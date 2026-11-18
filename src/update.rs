@@ -107,7 +107,13 @@ pub fn check() -> Result<Release, String> {
 
 /// Качает файл обновления во временный каталог и возвращает его путь.
 pub fn download(url: &str) -> Result<PathBuf, String> {
-    let dir = std::env::temp_dir().join("GameOverlay-update");
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?
+        .as_nanos();
+    let dir = std::env::temp_dir()
+        .join("GameOverlay-update")
+        .join(format!("{}-{stamp}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| format!("каталог: {e}"))?;
     let name = url.rsplit('/').next().unwrap_or("update.bin");
     let safe: String = name
@@ -134,9 +140,38 @@ pub fn download(url: &str) -> Result<PathBuf, String> {
         return Err(format!("загрузка: HTTP {}", response.status()));
     }
 
-    let mut file = std::fs::File::create(&path).map_err(|e| format!("файл: {e}"))?;
+    let pending = path.with_extension("partial");
+    let mut file = std::fs::File::create(&pending).map_err(|e| format!("файл: {e}"))?;
     std::io::copy(&mut response, &mut file).map_err(|e| format!("запись: {e}"))?;
+    file.sync_all().map_err(|e| format!("сохранение: {e}"))?;
+    drop(file);
+    validate_payload(&pending, &path)?;
+    std::fs::rename(&pending, &path).map_err(|e| format!("завершение загрузки: {e}"))?;
     Ok(path)
+}
+
+fn validate_payload(file: &std::path::Path, destination: &std::path::Path) -> Result<(), String> {
+    use std::io::Read;
+    let mut header = [0u8; 8];
+    std::fs::File::open(file)
+        .and_then(|mut file| file.read_exact(&mut header))
+        .map_err(|e| format!("Неполный файл обновления: {e}"))?;
+    let extension = destination
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
+    let valid = if extension.eq_ignore_ascii_case("exe") {
+        header[..2] == *b"MZ"
+    } else if extension.eq_ignore_ascii_case("msi") {
+        header == [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]
+    } else {
+        false
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("Файл обновления имеет неверный формат".into())
+    }
 }
 
 /// Запускает скачанный установщик. MSI ставится через msiexec в тихом режиме.
@@ -158,7 +193,13 @@ pub fn launch_installer(path: &str) -> bool {
         .unwrap_or(false)
     {
         std::process::Command::new(path)
-            .arg("--replace")
+            .arg("--install-update")
+            .arg(std::process::id().to_string())
+            .args(
+                std::env::args_os()
+                    .skip(1)
+                    .filter(|arg| arg != "--replace" && arg != "--elevated"),
+            )
             .spawn()
             .is_ok()
     } else {
@@ -166,5 +207,33 @@ pub fn launch_installer(path: &str) -> bool {
             .arg(path)
             .spawn()
             .is_ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rejects_partial_or_html_downloads_and_accepts_package_headers() {
+        let root =
+            std::env::temp_dir().join(format!("GameOverlay-payload-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let payload = root.join("download.partial");
+        std::fs::write(&payload, b"<html>not an executable</html>").unwrap();
+        assert!(validate_payload(&payload, &root.join("GameOverlay.exe")).is_err());
+        std::fs::write(&payload, b"MZ").unwrap();
+        assert!(validate_payload(&payload, &root.join("GameOverlay.exe")).is_err());
+        std::fs::write(&payload, b"MZvalid-header").unwrap();
+        assert!(validate_payload(&payload, &root.join("GameOverlay.exe")).is_ok());
+        assert!(validate_payload(&payload, &root.join("setup.msi")).is_err());
+        std::fs::write(&payload, [0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]).unwrap();
+        assert!(validate_payload(&payload, &root.join("setup.msi")).is_ok());
+        std::fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn patch_versions_compare_numerically() {
+        assert!(is_newer("v1.5.10", "1.5.9"));
+        assert!(!is_newer("v1.5.4", "1.5.4"));
+        assert!(!is_newer("v1.5.3", "1.5.4"));
     }
 }

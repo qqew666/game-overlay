@@ -75,6 +75,13 @@ pub fn tint(color: u32) -> u32 {
                     0xcbd1db
                 }
             }
+            0xc69d76 => {
+                if dark {
+                    0x343943
+                } else {
+                    0xe9e7e2
+                }
+            }
             0x895b3c => {
                 if dark {
                     0xc8b69b

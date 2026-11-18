@@ -9,6 +9,7 @@
 mod appearance;
 mod artwork;
 mod autostart;
+mod deployment;
 mod draw;
 mod fps;
 mod instance;
@@ -23,7 +24,7 @@ mod ui;
 mod update;
 
 /// Версия, которую приложение сравнивает с тегом последнего релиза.
-pub const APP_VERSION: &str = "1.5.3";
+pub const APP_VERSION: &str = "1.5.4";
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -166,6 +167,9 @@ fn parse_args() -> Result<Options, String> {
 }
 
 fn main() {
+    if deployment::bootstrap() {
+        return;
+    }
     let opts = match parse_args() {
         Ok(v) => v,
         Err(e) => {
@@ -205,21 +209,7 @@ fn main() {
         }
     }
 
-    // Older updaters launch from this directory without the replacement flag.
-    let legacy_update = std::env::current_exe()
-        .ok()
-        .and_then(|path| {
-            path.parent()
-                .and_then(|p| p.file_name())
-                .map(|p| p.to_owned())
-        })
-        .map(|name| {
-            name.to_string_lossy()
-                .eq_ignore_ascii_case("GameOverlay-update")
-        })
-        .unwrap_or(false);
-    let handoff =
-        legacy_update || std::env::args().any(|arg| arg == "--elevated" || arg == "--replace");
+    let handoff = std::env::args().any(|arg| arg == "--elevated" || arg == "--replace");
     let _instance = match instance::enter(handoff) {
         Ok(Some(instance)) => instance,
         Ok(None) => return,

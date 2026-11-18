@@ -128,26 +128,20 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
     );
     draw::round_fill(g, ox, oy + 2.0, CARD_W, CARD_H, RADIUS, argb(72, 0, 0, 0));
 
-    // Card.
-    draw::round_card(
-        g,
-        ox,
-        oy,
-        CARD_W,
-        CARD_H,
-        RADIUS,
-        argb(
-            if crate::appearance::GLASS.load(Ordering::Relaxed) {
-                205
-            } else {
-                248
-            },
-            246,
-            238,
-            224,
-        ),
-        draw::C_BORDER,
-    );
+    if crate::appearance::GLASS.load(Ordering::Relaxed) {
+        draw::glass_card(g, ox, oy, CARD_W, CARD_H, RADIUS, draw::C_CARD);
+    } else {
+        draw::round_card(
+            g,
+            ox,
+            oy,
+            CARD_W,
+            CARD_H,
+            RADIUS,
+            draw::C_BG,
+            draw::C_BORDER,
+        );
+    }
 
     // Accent rail on the left edge: cyan over magenta.
     // The two halves overlap by 4 px so the joint reads as one bar.

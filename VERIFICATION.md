@@ -1,3 +1,13 @@
+# 1.5.4 verification
+
+Windows x64 release build passed. Eight tests cover layout, motion, package headers and numeric patch version comparisons. MSI installation, upgrade from 1.5.3, shortcuts, autostart and uninstallation passed in Wine.
+
+Actual standalone update activation was tested under Wine 10. The downloaded EXE was copied to the permanent application path. Autostart was migrated with correct quoting, a native Shell Link was saved, and the temporary download was deleted. ShellExecute of the Start Menu shortcut then launched the application again. Repeated start/close worked. A legacy 1.5.3 parent-process handoff was also checked.
+
+The settings rows were tested through both their icon area and switch. Keyboard Tab/Space focus and overlay visibility passed. The glass appearance was inspected from an actual application screenshot.
+
+Windows-native composition, real audio output and live HTTPS update downloads still require a Windows check. Source-only GitHub releases intentionally have no downloadable application asset until the owner attaches one.
+
 # 1.5.3 verification
 
 Windows x64 release cross-build and six layout/movement tests passed.

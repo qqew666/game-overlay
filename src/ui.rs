@@ -38,6 +38,7 @@ struct PanelCtx {
     hover: Option<Action>,
     pressed: Option<Action>,
     focus: Option<Action>,
+    keyboard_focus: bool,
     tray: bool,
 }
 fn wide(s: &str) -> Vec<u16> {
@@ -67,7 +68,11 @@ fn text(g: *mut GpGraphics, s: &str, size: f32, bold: bool, color: u32, r: Rect,
     draw::text(g, s, size, bold, color, r.x, r.y, r.w, r.h, align);
 }
 fn card(g: *mut GpGraphics, r: Rect, bg: u32) {
-    draw::round_card(g, r.x, r.y, r.w, r.h, 14., bg, draw::C_BORDER);
+    if crate::appearance::GLASS.load(Ordering::Relaxed) {
+        draw::glass_card(g, r.x, r.y, r.w, r.h, (r.h / 2.).min(32.), bg);
+    } else {
+        draw::round_card(g, r.x, r.y, r.w, r.h, 14., bg, draw::C_BORDER);
+    }
 }
 fn control(g: *mut GpGraphics, ctx: &PanelCtx, a: Action, label: &str, selected: bool) {
     let r = layout::rect(a);
@@ -81,27 +86,158 @@ fn control(g: *mut GpGraphics, ctx: &PanelCtx, a: Action, label: &str, selected:
         draw::C_CARD
     };
     card(g, r, bg);
-    draw::line(
-        g,
-        r.x + 14.,
-        r.y + 2.,
-        r.x + r.w - 14.,
-        r.y + 2.,
-        argb(150, 255, 255, 255),
-        1.,
-    );
-    if ctx.focus == Some(a) {
-        let p = draw::rounded_rect(r.x + 3., r.y + 3., r.w - 6., r.h - 6., 11.);
+    if ctx.focus == Some(a) && ctx.keyboard_focus {
+        let radius = if crate::appearance::GLASS.load(Ordering::Relaxed) {
+            (r.h / 2. - 3.).min(29.)
+        } else {
+            11.
+        };
+        let p = draw::rounded_rect(r.x + 3., r.y + 3., r.w - 6., r.h - 6., radius);
         draw::stroke(g, p, draw::C_ACCENT, 2.);
         draw::path_free(p);
     }
     let label_size = if matches!(a, Action::Theme(_)) {
-        9.5
+        8.5
     } else {
         12.0
     };
     text(g, label, label_size, true, draw::C_TEXT, r, ALIGN_CENTER);
 }
+fn setting_row(
+    g: *mut GpGraphics,
+    ctx: &PanelCtx,
+    action: Action,
+    label: &str,
+    hint: &str,
+    on: bool,
+) {
+    let r = layout::rect(action);
+    let hovered = ctx.hover == Some(action);
+    let alpha = if ctx.pressed == Some(action) {
+        215
+    } else if hovered {
+        255
+    } else {
+        238
+    };
+    let background = ((alpha as u32) << 24) | (draw::C_CARD & 0xffffff);
+    draw::round_fill(g, r.x, r.y + 2., r.w, r.h, 16., argb(14, 0, 0, 0));
+    draw::round_card(
+        g,
+        r.x,
+        r.y,
+        r.w,
+        r.h,
+        16.,
+        background,
+        (90u32 << 24) | (draw::C_BORDER & 0xffffff),
+    );
+    draw::line(
+        g,
+        r.x + 17.,
+        r.y + 1.,
+        r.x + r.w - 17.,
+        r.y + 1.,
+        argb(95, 255, 255, 255),
+        1.,
+    );
+    if ctx.focus == Some(action) && ctx.keyboard_focus {
+        let ring = draw::rounded_rect(r.x + 2., r.y + 2., r.w - 4., r.h - 4., 14.);
+        draw::stroke(g, ring, draw::C_ACCENT, 1.5);
+        draw::path_free(ring);
+    }
+    let (ix, iy) = (r.x + 13., r.y + 9.);
+    draw::round_fill(
+        g,
+        ix,
+        iy,
+        32.,
+        32.,
+        10.,
+        (22u32 << 24) | (draw::C_ACCENT & 0xffffff),
+    );
+    let ink = if on { draw::C_ACCENT } else { draw::C_DIM };
+    match action {
+        Action::ToggleAutostart => {
+            let circle = draw::ellipse_path(ix + 9., iy + 9., 14., 14.);
+            draw::stroke(g, circle, ink, 1.6);
+            draw::path_free(circle);
+            draw::line(g, ix + 16., iy + 6., ix + 16., iy + 14., ink, 2.);
+        }
+        Action::ToggleFollow => {
+            let window = draw::rounded_rect(ix + 7., iy + 8., 18., 15., 3.);
+            draw::stroke(g, window, ink, 1.5);
+            draw::path_free(window);
+            draw::line(g, ix + 7., iy + 12., ix + 25., iy + 12., ink, 1.2);
+            draw::line(g, ix + 18., iy + 20., ix + 24., iy + 25., ink, 1.6);
+            draw::line(g, ix + 24., iy + 25., ix + 23., iy + 20., ink, 1.6);
+        }
+        _ => {
+            let monitor = draw::rounded_rect(ix + 6., iy + 7., 20., 15., 3.);
+            draw::stroke(g, monitor, ink, 1.5);
+            draw::path_free(monitor);
+            draw::line(g, ix + 16., iy + 22., ix + 16., iy + 26., ink, 1.5);
+            draw::line(g, ix + 11., iy + 26., ix + 21., iy + 26., ink, 1.5);
+        }
+    }
+    text(
+        g,
+        label,
+        12.5,
+        true,
+        draw::C_TEXT,
+        Rect::new(r.x + 59., r.y + 6., 440., 21.),
+        ALIGN_LEFT,
+    );
+    text(
+        g,
+        hint,
+        9.,
+        false,
+        draw::C_DIM,
+        Rect::new(r.x + 59., r.y + 27., 440., 15.),
+        ALIGN_LEFT,
+    );
+    let (tx, ty) = (r.x + r.w - 74., r.y + 11.);
+    draw::round_card(
+        g,
+        tx,
+        ty,
+        56.,
+        28.,
+        14.,
+        if on { draw::C_ACCENT } else { draw::C_BORDER },
+        argb(35, 70, 45, 28),
+    );
+    let kx = tx + if on { 30.5 } else { 3.5 };
+    let shadow = draw::ellipse_path(kx + 0.5, ty + 4., 22., 22.);
+    draw::fill(g, shadow, argb(40, 0, 0, 0));
+    draw::path_free(shadow);
+    let thumb = draw::ellipse_path(kx, ty + 3., 22., 22.);
+    draw::fill(g, thumb, argb(255, 255, 251, 242));
+    draw::path_free(thumb);
+    if on {
+        draw::line(
+            g,
+            kx + 7.,
+            ty + 14.,
+            kx + 10.,
+            ty + 17.,
+            argb(255, 115, 77, 49),
+            1.5,
+        );
+        draw::line(
+            g,
+            kx + 10.,
+            ty + 17.,
+            kx + 15.,
+            ty + 11.,
+            argb(255, 115, 77, 49),
+            1.5,
+        );
+    }
+}
+
 unsafe fn paint(hwnd: HWND) {
     draw::gdiplus_init();
     let mut ps = PAINTSTRUCT::default();
@@ -118,19 +254,11 @@ unsafe fn paint(hwnd: HWND) {
         if GdipCreateFromHDC(surface.dc(), &mut g) == Status(0) && !g.is_null() {
             let _ = GdipSetSmoothingMode(g, SmoothingModeAntiAlias);
             let _ = GdipSetTextRenderingHint(g, TextRenderingHintAntiAliasGridFit);
-            draw::round_fill(
-                g,
-                0.,
-                0.,
-                rc.right as f32,
-                rc.bottom as f32,
-                0.,
-                if crate::appearance::NATIVE_GLASS.load(Ordering::Relaxed) {
-                    argb(240, 246, 238, 224)
-                } else {
-                    draw::C_BG
-                },
-            );
+            if crate::appearance::GLASS.load(Ordering::Relaxed) {
+                draw::glass_background(g, rc.right as f32, rc.bottom as f32);
+            } else {
+                draw::round_fill(g, 0., 0., rc.right as f32, rc.bottom as f32, 0., draw::C_BG);
+            }
             let scale = (rc.right as f32 / PANEL_W as f32).min(rc.bottom as f32 / PANEL_H as f32);
             let _ = GdipScaleWorldTransform(g, scale, scale, MatrixOrderAppend);
             card(g, Rect::new(20., 20., 248., 720.), argb(255, 235, 219, 196));
@@ -318,39 +446,7 @@ unsafe fn paint(hwnd: HWND) {
                     st.visible.load(Ordering::Relaxed),
                 ),
             ] {
-                control(g, ctx, a, "", false);
-                let r = layout::rect(a);
-                text(
-                    g,
-                    label,
-                    12.,
-                    true,
-                    draw::C_TEXT,
-                    Rect::new(r.x + 16., r.y + 5., 480., 22.),
-                    ALIGN_LEFT,
-                );
-                text(
-                    g,
-                    hint,
-                    9.,
-                    false,
-                    draw::C_DIM,
-                    Rect::new(r.x + 16., r.y + 27., 480., 16.),
-                    ALIGN_LEFT,
-                );
-                draw::round_fill(
-                    g,
-                    r.x + r.w - 66.,
-                    r.y + 13.,
-                    48.,
-                    24.,
-                    12.,
-                    if on { draw::C_ACCENT } else { draw::C_BORDER },
-                );
-                let knob =
-                    draw::ellipse_path(r.x + r.w - if on { 40. } else { 62. }, r.y + 17., 16., 16.);
-                draw::fill(g, knob, draw::C_CARD);
-                draw::path_free(knob);
+                setting_row(g, ctx, a, label, hint, on);
             }
             text(
                 g,
@@ -799,6 +895,7 @@ unsafe extern "system" fn wnd_proc(
                             None => 0,
                         };
                         ctx.focus = Some(actions[next]);
+                        ctx.keyboard_focus = true;
                     }
                     13 | 32 if lparam.0 & (1 << 30) == 0 => {
                         if let Some(action) = ctx.focus {
@@ -874,8 +971,11 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
                         continue;
                     }
                     state.update_status.store(UPDATE_NEWER, Ordering::Relaxed);
-                    // Prefer the standalone EXE. Launch only on the next explicit click.
-                    let Some(url) = release.exe_url.or(release.msi_url) else {
+                    // Prefer a durable MSI installation, with standalone activation as fallback.
+                    let Some(url) = release.msi_url.or(release.exe_url) else {
+                        state.set_notice(
+                            "В релизе пока только исходники. EXE или MSI ещё не опубликованы.",
+                        );
                         state.update_status.store(UPDATE_FAILED, Ordering::Relaxed);
                         continue;
                     };
@@ -983,6 +1083,7 @@ pub fn run_panel(state: Arc<AppState>, start_hidden: bool) {
             hover: None,
             pressed: None,
             focus: None,
+            keyboard_focus: false,
             tray: false,
         }));
         SetWindowLongPtrW(hwnd, GWLP_USERDATA, ctx as isize);
