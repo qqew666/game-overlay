@@ -1,9 +1,9 @@
-PASS: MSI installs the exact standalone 1.5.1 EXE
+PASS: MSI installs the exact standalone 1.5.2 EXE
 PASS: per-user autostart points to the installed executable
 PASS: Desktop and Start Menu shortcuts are created
-PASS: 1.5.0 uninstall removes its executable
-PASS: previous 1.5.0 MSI installs successfully
-PASS: upgrade from 1.5.0 installs the exact 1.5.1 executable
+PASS: 1.5.2 uninstall removes its executable
+PASS: previous 1.5.1 MSI installs successfully
+PASS: upgrade from 1.5.1 installs the exact 1.5.2 executable
 PASS: final uninstall removes executable, autostart and both shortcuts
 
 Tested using the Windows Installer implementation in Wine 10. A real Windows 10/11 check remains recommended.

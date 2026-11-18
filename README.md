@@ -1,14 +1,12 @@
-# GameOverlay 1.5.1 — загрузки
+# GameOverlay 1.5.2
 
-- [Скачать GameOverlay.exe](https://github.com/qqew666/game-overlay/raw/refs/heads/codex/overlay-1.5.1-downloads/GameOverlay.exe)
-- [Установщик GameOverlay-1.5.1-x64.msi](https://github.com/qqew666/game-overlay/raw/refs/heads/codex/overlay-1.5.1-downloads/GameOverlay-1.5.1-x64.msi)
-- [Все исходники проекта ZIP](https://github.com/qqew666/game-overlay/raw/refs/heads/codex/overlay-1.5.1-downloads/GameOverlay-1.5.1-sources.zip)
-- [SHA-256](SHA256SUMS.txt)
+Готовые файлы для самостоятельной публикации.
 
-EXE для Windows 10/11 x64, ничего распаковывать не нужно. Портрет Mimi встроен.
+- [GameOverlay.exe](https://github.com/qqew666/game-overlay/raw/refs/heads/codex/overlay-1.5.2-downloads/GameOverlay.exe)
+- [GameOverlay-1.5.2-x64.msi](https://github.com/qqew666/game-overlay/raw/refs/heads/codex/overlay-1.5.2-downloads/GameOverlay-1.5.2-x64.msi)
+- [Полные исходники ZIP](https://github.com/qqew666/game-overlay/archive/refs/tags/v1.5.2.zip)
+- [SHA256SUMS.txt](SHA256SUMS.txt)
 
-Исходники: [codex/overlay-1.5.1](https://github.com/qqew666/game-overlay/tree/codex/overlay-1.5.1), коммит 6fbdbe8.
-Проверки и ограничения: [VERIFICATION.md](https://github.com/qqew666/game-overlay/blob/codex/overlay-1.5.1/VERIFICATION.md).
-Меню и весь код приложения написаны на Rust. EXE собран в release-режиме, не подписан.
+Код приложения на Rust. Новые возможности — палитры, нативный стеклянный фон при поддержке Windows 11, настройки звука, масштабы от 40%, встроенная бежевая иконка и переключение целей пинга F2/F3 с обработкой конфликтов. Нажатие на Mimi открывает указанную пользователем страницу в браузере.
 
-MSI повторяет установку прошлых версий: для текущего пользователя, с мастером WiX, ярлыками и автозапуском. [Проверка установки, обновления с 1.4.0 и удаления](MSI-VERIFICATION.txt).
+Проверки и ограничения доступны в VERIFICATION.md исходников. На GitHub загружены ветки и тег v1.5.2, релиз пользователь публикует самостоятельно.
