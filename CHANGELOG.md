@@ -1,3 +1,10 @@
+# 1.5.5
+
+- Add a compact 280 x 82 logical-pixel overlay window with live FPS and ping.
+- Toggle Mini Mode through the panel or F7, with saved preference and hotkey-conflict fallback.
+- Reuse themes, glass, scale controls and smooth following in both modes.
+- Include the WiX Burn bundle source for the offline Setup.exe installer.
+
 # 1.5.4
 
 - Prefer MSI updates for durable installation.

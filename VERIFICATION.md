@@ -1,3 +1,17 @@
+# 1.5.5 verification
+
+Windows x64 release build and all eight layout, movement and updater tests passed.
+The actual application was exercised under Wine 10 with native Windows registry queries and X11 mouse/key input.
+
+- The Mini Mode button and F7 switch between 420 x 210 and 280 x 82 windows at 100%.
+- Compact window sizes were checked at 40%, 100% and 150%.
+- Mini Mode survives complete application shutdown and restart.
+- The same interaction checks passed with F7 reserved by another process; the log confirms registration failed and the polling fallback was used.
+- MSI installation, upgrade from 1.5.4, autostart, Desktop/Start Menu shortcuts and complete uninstall passed. The installed EXE matches the standalone EXE byte for byte.
+- The offline WiX Burn Setup.exe installed the exact same EXE and uninstalled successfully; both returned exit code 0.
+
+The panel screenshot is from the running application. Native Windows gaming, desktop composition and audible output still need a real Windows check. The executables are unsigned. GitHub receives a source-only release; application and installer files are delivered separately.
+
 # 1.5.4 verification
 
 Windows x64 release build passed. Eight tests cover layout, motion, package headers and numeric patch version comparisons. MSI installation, upgrade from 1.5.3, shortcuts, autostart and uninstallation passed in Wine.

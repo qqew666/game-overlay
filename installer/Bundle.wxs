@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:bal="http://wixtoolset.org/schemas/v4/wxs/bal">
+  <?ifndef PackageVersion ?>
+    <?define PackageVersion="1.5.5.0" ?>
+  <?endif ?>
+  <?ifndef MsiFile ?>
+    <?define MsiFile="GameOverlay-1.5.5-x64.msi" ?>
+  <?endif ?>
+  <Bundle Name="GameOverlay" Version="$(var.PackageVersion)" Manufacturer="Maklyxa"
+          UpgradeCode="ACF05D2C-4334-45B0-95C4-7B1398095515" IconSourceFile="app.ico">
+    <BootstrapperApplication>
+      <bal:WixStandardBootstrapperApplication Theme="hyperlinkLicense" LicenseUrl=""
+          ShowVersion="yes" SuppressOptionsUI="yes" />
+    </BootstrapperApplication>
+    <Chain>
+      <MsiPackage SourceFile="$(var.MsiFile)" DisplayName="GameOverlay" Compressed="yes" Vital="yes" />
+    </Chain>
+  </Bundle>
+</Wix>

@@ -21,7 +21,7 @@ use windows::Win32::Graphics::GdiPlus::{
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, RegisterHotKey, UnregisterHotKey, MOD_NOREPEAT, VK_END, VK_F1, VK_F2, VK_F3,
-    VK_F4, VK_F6,
+    VK_F4, VK_F6, VK_F7,
 };
 use windows::Win32::UI::WindowsAndMessaging::*;
 
@@ -34,19 +34,29 @@ use crate::state::{AppState, SOURCE_ETW};
 
 static FALLBACK_KEYS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static PRESSED_KEYS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-unsafe fn poll_target_keys(state: &AppState) {
+unsafe fn poll_fallback_keys(state: &AppState) {
     let mask = FALLBACK_KEYS.load(Ordering::Relaxed);
     if mask == 0 {
         return;
     }
     let mut pressed = 0;
-    for (bit, key, delta) in [(1, VK_F2, 1), (2, VK_F3, -1)] {
-        if mask & bit != 0 && GetAsyncKeyState(key.0 as i32) < 0 {
+    let previous = PRESSED_KEYS.load(Ordering::Relaxed);
+    for (bit, key, delta) in [(1, VK_F2, 1), (2, VK_F3, -1), (4, VK_F7, 0)] {
+        if mask & bit == 0 {
+            continue;
+        }
+        let state_bits = GetAsyncKeyState(key.0 as i32);
+        let down = state_bits < 0;
+        if down {
             pressed |= bit;
-            if PRESSED_KEYS.load(Ordering::Relaxed) & bit == 0 {
+        }
+        if previous & bit == 0 && (down || state_bits & 1 != 0) {
+            if delta == 0 {
+                state.toggle_compact();
+            } else {
                 state.cycle_target(delta);
-                crate::appearance::click();
             }
+            crate::appearance::click();
         }
     }
     PRESSED_KEYS.store(pressed, Ordering::Relaxed);
@@ -57,6 +67,8 @@ const CARD_H: f32 = 190.0;
 const SHADOW: f32 = 10.0;
 const WIN_W: i32 = 420;
 const WIN_H: i32 = 210;
+const MINI_WIN_W: i32 = 280;
+const MINI_WIN_H: i32 = 82;
 const RADIUS: f32 = 22.0;
 const NOTICE_SECS: f32 = 2.5;
 /// Range the user can pick in the panel; the registry is clamped to it too.
@@ -69,10 +81,17 @@ fn current_scale(st: &AppState) -> f32 {
 
 /// Window size for the current scale.
 fn window_size(st: &AppState) -> (i32, i32) {
-    let s = current_scale(st);
+    scaled_size(st.compact.load(Ordering::Relaxed), current_scale(st))
+}
+fn scaled_size(compact: bool, scale: f32) -> (i32, i32) {
+    let (width, height) = if compact {
+        (MINI_WIN_W, MINI_WIN_H)
+    } else {
+        (WIN_W, WIN_H)
+    };
     (
-        (WIN_W as f32 * s).round() as i32,
-        (WIN_H as f32 * s).round() as i32,
+        (width as f32 * scale).round() as i32,
+        (height as f32 * scale).round() as i32,
     )
 }
 
@@ -91,10 +110,82 @@ fn short(s: &str, max: usize) -> String {
     }
 }
 
+fn render_mini(g: *mut GpGraphics, st: &AppState) {
+    if crate::appearance::GLASS.load(Ordering::Relaxed) {
+        draw::glass_card(g, 10., 10., 260., 62., 20., draw::C_CARD);
+    } else {
+        draw::round_card(g, 10., 10., 260., 62., 20., draw::C_BG, draw::C_BORDER);
+    }
+    let fps = st.fps.load(Ordering::Relaxed);
+    let ping = st.ping_deci.load(Ordering::Relaxed);
+    let lost = st.ping_lost.load(Ordering::Relaxed) || ping < 0;
+    let fps_value = if fps == 0 {
+        "—".to_owned()
+    } else {
+        fps.to_string()
+    };
+    let ping_value = if lost {
+        "—".to_owned()
+    } else {
+        format!("{:.1}", ping as f32 / 10.)
+    };
+    draw::text(
+        g,
+        "FPS",
+        9.,
+        true,
+        draw::C_DIM,
+        26.,
+        17.,
+        90.,
+        14.,
+        draw::ALIGN_LEFT,
+    );
+    draw::text(
+        g,
+        &fps_value,
+        25.,
+        true,
+        draw::fps_color(fps),
+        24.,
+        30.,
+        102.,
+        32.,
+        draw::ALIGN_LEFT,
+    );
+    draw::line(g, 133., 23., 133., 58., draw::C_BORDER, 1.);
+    draw::text(
+        g,
+        "PING · ms",
+        9.,
+        true,
+        draw::C_DIM,
+        150.,
+        17.,
+        102.,
+        14.,
+        draw::ALIGN_LEFT,
+    );
+    draw::text(
+        g,
+        &ping_value,
+        25.,
+        true,
+        draw::ping_color(ping / 10, lost),
+        148.,
+        30.,
+        106.,
+        32.,
+        draw::ALIGN_LEFT,
+    );
+}
+
 unsafe fn render(hwnd: HWND, st: &AppState) {
     draw::gdiplus_init();
 
-    let (win_w, win_h) = window_size(st);
+    let compact = st.compact.load(Ordering::Relaxed);
+    let scale = current_scale(st);
+    let (win_w, win_h) = scaled_size(compact, scale);
     let Some(surface) = Surface::new(win_w, win_h) else {
         crate::vlog!("[overlay] Surface::new({win_w}x{win_h}) failed");
         return;
@@ -109,309 +200,311 @@ unsafe fn render(hwnd: HWND, st: &AppState) {
     let _ = unsafe { GdipSetTextRenderingHint(g, TextRenderingHintAntiAliasGridFit) };
     // Everything below is laid out in the designed 420x210 space; scaling the
     // world transform grows the card and its type together.
-    let _ = unsafe {
-        GdipScaleWorldTransform(g, current_scale(st), current_scale(st), MatrixOrderAppend)
-    };
+    let _ = unsafe { GdipScaleWorldTransform(g, scale, scale, MatrixOrderAppend) };
 
-    let ox = SHADOW;
-    let oy = SHADOW;
-
-    // Drop shadow: two stacked rounded rects, wider and softer at the back.
-    draw::round_fill(
-        g,
-        ox - 1.0,
-        oy + 5.0,
-        CARD_W + 2.0,
-        CARD_H,
-        RADIUS + 2.0,
-        argb(46, 0, 0, 0),
-    );
-    draw::round_fill(g, ox, oy + 2.0, CARD_W, CARD_H, RADIUS, argb(72, 0, 0, 0));
-
-    if crate::appearance::GLASS.load(Ordering::Relaxed) {
-        draw::glass_card(g, ox, oy, CARD_W, CARD_H, RADIUS, draw::C_CARD);
+    if compact {
+        render_mini(g, st);
     } else {
-        draw::round_card(
+        let ox = SHADOW;
+        let oy = SHADOW;
+
+        // Drop shadow: two stacked rounded rects, wider and softer at the back.
+        draw::round_fill(
             g,
-            ox,
-            oy,
-            CARD_W,
+            ox - 1.0,
+            oy + 5.0,
+            CARD_W + 2.0,
             CARD_H,
-            RADIUS,
-            draw::C_BG,
-            draw::C_BORDER,
+            RADIUS + 2.0,
+            argb(46, 0, 0, 0),
         );
-    }
+        draw::round_fill(g, ox, oy + 2.0, CARD_W, CARD_H, RADIUS, argb(72, 0, 0, 0));
 
-    // Accent rail on the left edge: cyan over magenta.
-    // The two halves overlap by 4 px so the joint reads as one bar.
-    draw::round_fill(g, ox + 10.0, oy + 20.0, 5.0, 70.0, 2.5, draw::C_ACCENT);
-    draw::round_fill(g, ox + 10.0, oy + 86.0, 5.0, 70.0, 2.5, draw::C_SOFT);
+        if crate::appearance::GLASS.load(Ordering::Relaxed) {
+            draw::glass_card(g, ox, oy, CARD_W, CARD_H, RADIUS, draw::C_CARD);
+        } else {
+            draw::round_card(
+                g,
+                ox,
+                oy,
+                CARD_W,
+                CARD_H,
+                RADIUS,
+                draw::C_BG,
+                draw::C_BORDER,
+            );
+        }
 
-    let fps = st.fps.load(Ordering::Relaxed);
-    let ft = st.frametime_centi_ms.load(Ordering::Relaxed);
-    let ping_deci = st.ping_deci.load(Ordering::Relaxed);
-    let ping = if ping_deci < 0 {
-        -1
-    } else {
-        (ping_deci + 5) / 10
-    };
-    let lost = st.ping_lost.load(Ordering::Relaxed);
-    let exact = st.fps_source.load(Ordering::Relaxed) == SOURCE_ETW;
+        // Accent rail on the left edge: cyan over magenta.
+        // The two halves overlap by 4 px so the joint reads as one bar.
+        draw::round_fill(g, ox + 10.0, oy + 20.0, 5.0, 70.0, 2.5, draw::C_ACCENT);
+        draw::round_fill(g, ox + 10.0, oy + 86.0, 5.0, 70.0, 2.5, draw::C_SOFT);
 
-    // Header: boykisser on the left, game name, FPS source underneath.
-    draw::draw_mimi(g, ox + 25.0, oy + 12.0, 48.0);
+        let fps = st.fps.load(Ordering::Relaxed);
+        let ft = st.frametime_centi_ms.load(Ordering::Relaxed);
+        let ping_deci = st.ping_deci.load(Ordering::Relaxed);
+        let ping = if ping_deci < 0 {
+            -1
+        } else {
+            (ping_deci + 5) / 10
+        };
+        let lost = st.ping_lost.load(Ordering::Relaxed);
+        let exact = st.fps_source.load(Ordering::Relaxed) == SOURCE_ETW;
 
-    let game = st.game_name_string();
-    let title = if game.is_empty() {
-        "GameOverlay".to_string()
-    } else {
-        short(&game, 24)
-    };
-    draw::text(
-        g,
-        &title,
-        14.0,
-        true,
-        draw::C_TEXT,
-        ox + 84.0,
-        oy + 16.0,
-        220.0,
-        20.0,
-        draw::ALIGN_LEFT,
-    );
-    let source = if exact {
-        "точный FPS".to_string()
-    } else {
-        "базовый FPS".to_string()
-    };
-    draw::text(
-        g,
-        &source,
-        9.5,
-        false,
-        draw::C_DIM,
-        ox + 84.0,
-        oy + 38.0,
-        220.0,
-        14.0,
-        draw::ALIGN_LEFT,
-    );
+        // Header: boykisser on the left, game name, FPS source underneath.
+        draw::draw_mimi(g, ox + 25.0, oy + 12.0, 48.0);
 
-    // Separator under the header.
-    draw::line(
-        g,
-        ox + 24.0,
-        oy + 70.0,
-        ox + CARD_W - 24.0,
-        oy + 70.0,
-        argb(40, 167, 131, 98),
-        1.0,
-    );
+        let game = st.game_name_string();
+        let title = if game.is_empty() {
+            "GameOverlay".to_string()
+        } else {
+            short(&game, 24)
+        };
+        draw::text(
+            g,
+            &title,
+            14.0,
+            true,
+            draw::C_TEXT,
+            ox + 84.0,
+            oy + 16.0,
+            220.0,
+            20.0,
+            draw::ALIGN_LEFT,
+        );
+        let source = if exact {
+            "точный FPS".to_string()
+        } else {
+            "базовый FPS".to_string()
+        };
+        draw::text(
+            g,
+            &source,
+            9.5,
+            false,
+            draw::C_DIM,
+            ox + 84.0,
+            oy + 38.0,
+            220.0,
+            14.0,
+            draw::ALIGN_LEFT,
+        );
 
-    // FPS column.
-    draw::text(
-        g,
-        "FPS",
-        9.0,
-        true,
-        draw::C_DIM,
-        ox + 30.0,
-        oy + 78.0,
-        90.0,
-        12.0,
-        draw::ALIGN_LEFT,
-    );
-    let fps_value = if fps == 0 {
-        "--".to_string()
-    } else {
-        fps.to_string()
-    };
-    draw::text(
-        g,
-        &fps_value,
-        44.0,
-        true,
-        draw::fps_color(fps),
-        ox + 28.0,
-        oy + 90.0,
-        150.0,
-        52.0,
-        draw::ALIGN_LEFT,
-    );
-    let ft_text = if fps == 0 {
-        "ожидание кадра".to_string()
-    } else {
-        format!("{:.1} ms кадр", ft as f32 / 100.0)
-    };
-    draw::text(
-        g,
-        &ft_text,
-        10.0,
-        false,
-        draw::C_DIM,
-        ox + 30.0,
-        oy + 146.0,
-        150.0,
-        14.0,
-        draw::ALIGN_LEFT,
-    );
+        // Separator under the header.
+        draw::line(
+            g,
+            ox + 24.0,
+            oy + 70.0,
+            ox + CARD_W - 24.0,
+            oy + 70.0,
+            argb(40, 167, 131, 98),
+            1.0,
+        );
 
-    // Divider between the two readings.
-    draw::line(
-        g,
-        ox + 196.0,
-        oy + 78.0,
-        ox + 196.0,
-        oy + 160.0,
-        argb(34, 167, 131, 98),
-        1.0,
-    );
+        // FPS column.
+        draw::text(
+            g,
+            "FPS",
+            9.0,
+            true,
+            draw::C_DIM,
+            ox + 30.0,
+            oy + 78.0,
+            90.0,
+            12.0,
+            draw::ALIGN_LEFT,
+        );
+        let fps_value = if fps == 0 {
+            "--".to_string()
+        } else {
+            fps.to_string()
+        };
+        draw::text(
+            g,
+            &fps_value,
+            44.0,
+            true,
+            draw::fps_color(fps),
+            ox + 28.0,
+            oy + 90.0,
+            150.0,
+            52.0,
+            draw::ALIGN_LEFT,
+        );
+        let ft_text = if fps == 0 {
+            "ожидание кадра".to_string()
+        } else {
+            format!("{:.1} ms кадр", ft as f32 / 100.0)
+        };
+        draw::text(
+            g,
+            &ft_text,
+            10.0,
+            false,
+            draw::C_DIM,
+            ox + 30.0,
+            oy + 146.0,
+            150.0,
+            14.0,
+            draw::ALIGN_LEFT,
+        );
 
-    // Ping column.
-    draw::text(
-        g,
-        "PING",
-        9.0,
-        true,
-        draw::C_DIM,
-        ox + 216.0,
-        oy + 78.0,
-        90.0,
-        12.0,
-        draw::ALIGN_LEFT,
-    );
-    // Sub-10 ms values keep one decimal: a single digit is what a good route
-    // to a game server looks like, and rounding it to "0" hides the difference.
-    let ping_value = if lost || ping_deci < 0 {
-        "--".to_string()
-    } else if ping_deci < 100 {
-        format!("{:.1}", ping_deci as f32 / 10.0)
-    } else {
-        format!("{ping}")
-    };
-    let ping_tone = draw::ping_color(ping, lost);
-    draw::text(
-        g,
-        &ping_value,
-        38.0,
-        true,
-        ping_tone,
-        ox + 216.0,
-        oy + 90.0,
-        118.0,
-        50.0,
-        draw::ALIGN_RIGHT,
-    );
-    draw::text(
-        g,
-        "ms",
-        11.0,
-        false,
-        ping_tone,
-        ox + 340.0,
-        oy + 108.0,
-        30.0,
-        14.0,
-        draw::ALIGN_LEFT,
-    );
+        // Divider between the two readings.
+        draw::line(
+            g,
+            ox + 196.0,
+            oy + 78.0,
+            ox + 196.0,
+            oy + 160.0,
+            argb(34, 167, 131, 98),
+            1.0,
+        );
 
-    let target = st.target_name.lock().map(|t| t.clone()).unwrap_or_default();
-    draw::text(
-        g,
-        &short(&target, 18),
-        9.5,
-        false,
-        draw::C_DIM,
-        ox + 216.0,
-        oy + 146.0,
-        160.0,
-        14.0,
-        draw::ALIGN_LEFT,
-    );
+        // Ping column.
+        draw::text(
+            g,
+            "PING",
+            9.0,
+            true,
+            draw::C_DIM,
+            ox + 216.0,
+            oy + 78.0,
+            90.0,
+            12.0,
+            draw::ALIGN_LEFT,
+        );
+        // Sub-10 ms values keep one decimal: a single digit is what a good route
+        // to a game server looks like, and rounding it to "0" hides the difference.
+        let ping_value = if lost || ping_deci < 0 {
+            "--".to_string()
+        } else if ping_deci < 100 {
+            format!("{:.1}", ping_deci as f32 / 10.0)
+        } else {
+            format!("{ping}")
+        };
+        let ping_tone = draw::ping_color(ping, lost);
+        draw::text(
+            g,
+            &ping_value,
+            38.0,
+            true,
+            ping_tone,
+            ox + 216.0,
+            oy + 90.0,
+            118.0,
+            50.0,
+            draw::ALIGN_RIGHT,
+        );
+        draw::text(
+            g,
+            "ms",
+            11.0,
+            false,
+            ping_tone,
+            ox + 340.0,
+            oy + 108.0,
+            30.0,
+            14.0,
+            draw::ALIGN_LEFT,
+        );
 
-    // Ping graph across the bottom.
-    let samples: Vec<i32> = st.history.lock().map(|h| h.clone()).unwrap_or_default();
-    let graph_x = ox + 30.0;
-    let graph_w = CARD_W - 60.0;
-    let graph_y = oy + 166.0;
-    let graph_h = 14.0;
+        let target = st.target_name.lock().map(|t| t.clone()).unwrap_or_default();
+        draw::text(
+            g,
+            &short(&target, 18),
+            9.5,
+            false,
+            draw::C_DIM,
+            ox + 216.0,
+            oy + 146.0,
+            160.0,
+            14.0,
+            draw::ALIGN_LEFT,
+        );
 
-    draw::round_fill(
-        g,
-        graph_x,
-        graph_y + graph_h - 1.0,
-        graph_w,
-        1.0,
-        0.5,
-        draw::C_TRACK,
-    );
+        // Ping graph across the bottom.
+        let samples: Vec<i32> = st.history.lock().map(|h| h.clone()).unwrap_or_default();
+        let graph_x = ox + 30.0;
+        let graph_w = CARD_W - 60.0;
+        let graph_y = oy + 166.0;
+        let graph_h = 14.0;
 
-    if samples.len() >= 2 {
-        let valid: Vec<f32> = samples
-            .iter()
-            .filter(|v| **v >= 0)
-            .map(|v| *v as f32 / 10.0)
-            .collect();
-        if valid.len() >= 2 {
-            let max = valid.iter().cloned().fold(1.0f32, f32::max).max(30.0);
-            let step = graph_w / (samples.len().saturating_sub(1)).max(1) as f32;
-            let mut points: Vec<(f32, f32)> = Vec::with_capacity(samples.len() + 2);
-            for (i, v) in samples.iter().enumerate() {
-                let x = graph_x + step * i as f32;
-                let value = if *v < 0 { max } else { *v as f32 / 10.0 };
-                let y = graph_y + graph_h - (value / max).clamp(0.0, 1.0) * graph_h;
-                points.push((x, y));
-            }
+        draw::round_fill(
+            g,
+            graph_x,
+            graph_y + graph_h - 1.0,
+            graph_w,
+            1.0,
+            0.5,
+            draw::C_TRACK,
+        );
 
-            // Soft area under the line, then the line itself.
-            let mut area = points.clone();
-            area.push((graph_x + graph_w, graph_y + graph_h));
-            area.push((graph_x, graph_y + graph_h));
-            let poly = draw::polygon(&area);
-            draw::fill(g, poly, argb(38, 167, 131, 98));
-            draw::path_free(poly);
+        if samples.len() >= 2 {
+            let valid: Vec<f32> = samples
+                .iter()
+                .filter(|v| **v >= 0)
+                .map(|v| *v as f32 / 10.0)
+                .collect();
+            if valid.len() >= 2 {
+                let max = valid.iter().cloned().fold(1.0f32, f32::max).max(30.0);
+                let step = graph_w / (samples.len().saturating_sub(1)).max(1) as f32;
+                let mut points: Vec<(f32, f32)> = Vec::with_capacity(samples.len() + 2);
+                for (i, v) in samples.iter().enumerate() {
+                    let x = graph_x + step * i as f32;
+                    let value = if *v < 0 { max } else { *v as f32 / 10.0 };
+                    let y = graph_y + graph_h - (value / max).clamp(0.0, 1.0) * graph_h;
+                    points.push((x, y));
+                }
 
-            let line = draw::polygon(&points);
-            draw::stroke(g, line, ping_tone, 1.8);
-            draw::path_free(line);
+                // Soft area under the line, then the line itself.
+                let mut area = points.clone();
+                area.push((graph_x + graph_w, graph_y + graph_h));
+                area.push((graph_x, graph_y + graph_h));
+                let poly = draw::polygon(&area);
+                draw::fill(g, poly, argb(38, 167, 131, 98));
+                draw::path_free(poly);
 
-            // Marker on the newest sample.
-            if let Some((x, y)) = points.last() {
-                let dot = draw::ellipse_path(x - 2.6, *y - 2.6, 5.2, 5.2);
-                draw::fill(g, dot, ping_tone);
-                draw::path_free(dot);
+                let line = draw::polygon(&points);
+                draw::stroke(g, line, ping_tone, 1.8);
+                draw::path_free(line);
+
+                // Marker on the newest sample.
+                if let Some((x, y)) = points.last() {
+                    let dot = draw::ellipse_path(x - 2.6, *y - 2.6, 5.2, 5.2);
+                    draw::fill(g, dot, ping_tone);
+                    draw::path_free(dot);
+                }
             }
         }
-    }
 
-    // Transient status badge.
-    if let Ok(n) = st.notice.lock() {
-        if let Some((msg, at)) = n.as_ref() {
-            let age = at.elapsed().as_secs_f32();
-            if age < NOTICE_SECS {
-                let alpha = (255.0 * (1.0 - age / NOTICE_SECS)).clamp(0.0, 255.0) as u8;
-                draw::round_fill(
-                    g,
-                    ox + CARD_W - 184.0,
-                    oy + 14.0,
-                    168.0,
-                    24.0,
-                    12.0,
-                    argb(alpha.saturating_sub(40), 230, 210, 184),
-                );
-                draw::text(
-                    g,
-                    msg,
-                    10.0,
-                    true,
-                    argb(alpha, 65, 47, 37),
-                    ox + CARD_W - 184.0,
-                    oy + 15.0,
-                    168.0,
-                    22.0,
-                    draw::ALIGN_CENTER,
-                );
+        // Transient status badge.
+        if let Ok(n) = st.notice.lock() {
+            if let Some((msg, at)) = n.as_ref() {
+                let age = at.elapsed().as_secs_f32();
+                if age < NOTICE_SECS {
+                    let alpha = (255.0 * (1.0 - age / NOTICE_SECS)).clamp(0.0, 255.0) as u8;
+                    draw::round_fill(
+                        g,
+                        ox + CARD_W - 184.0,
+                        oy + 14.0,
+                        168.0,
+                        24.0,
+                        12.0,
+                        argb(alpha.saturating_sub(40), 230, 210, 184),
+                    );
+                    draw::text(
+                        g,
+                        msg,
+                        10.0,
+                        true,
+                        argb(alpha, 65, 47, 37),
+                        ox + CARD_W - 184.0,
+                        oy + 15.0,
+                        168.0,
+                        22.0,
+                        draw::ALIGN_CENTER,
+                    );
+                }
             }
         }
     }
@@ -500,7 +593,7 @@ unsafe extern "system" fn wnd_proc(
                         return LRESULT(0);
                     }
                     if wparam.0 == 1 {
-                        poll_target_keys(st);
+                        poll_fallback_keys(st);
                     }
                     let want = st.visible.load(Ordering::Relaxed);
                     let shown = IsWindowVisible(hwnd).as_bool();
@@ -524,6 +617,10 @@ unsafe extern "system" fn wnd_proc(
             unsafe {
                 if let Some(st) = state_of(hwnd) {
                     match wparam.0 as u32 {
+                        7 => {
+                            crate::appearance::click();
+                            st.toggle_compact();
+                        }
                         1 => {
                             let v = !st.visible.load(Ordering::Relaxed);
                             st.visible.store(v, Ordering::Relaxed);
@@ -573,7 +670,7 @@ unsafe extern "system" fn wnd_proc(
         WM_DESTROY => {
             let _ = KillTimer(hwnd, 1);
             let _ = KillTimer(hwnd, 2);
-            for id in 1..=6 {
+            for id in 1..=7 {
                 let _ = UnregisterHotKey(hwnd, id);
             }
             let ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *const AppState;
@@ -714,13 +811,14 @@ pub fn run_overlay(state: Arc<AppState>) {
         state.overlay_hwnd.store(hwnd.0 as isize, Ordering::Relaxed);
 
         // F1 toggle, F2/F3 target, F4 follow window, F6 autostart, End quit.
-        let hotkeys: [(i32, u32); 6] = [
+        let hotkeys: [(i32, u32); 7] = [
             (1, VK_F1.0 as u32),
             (2, VK_F2.0 as u32),
             (3, VK_F3.0 as u32),
             (4, VK_F4.0 as u32),
             (5, VK_END.0 as u32),
             (6, VK_F6.0 as u32),
+            (7, VK_F7.0 as u32),
         ];
         for (id, vk) in hotkeys {
             if let Err(e) = RegisterHotKey(hwnd, id, MOD_NOREPEAT, vk) {
@@ -729,6 +827,9 @@ pub fn run_overlay(state: Arc<AppState>) {
                 }
                 if id == 3 {
                     FALLBACK_KEYS.fetch_or(2, Ordering::Relaxed);
+                }
+                if id == 7 {
+                    FALLBACK_KEYS.fetch_or(4, Ordering::Relaxed);
                 }
                 crate::vlog!("[hotkey] id {id} (vk {vk:#x}) failed: {e:?}");
             }

@@ -510,18 +510,12 @@ unsafe fn paint(hwnd: HWND) {
                 false,
             );
             control(g, ctx, Action::HideToTray, "Свернуть в трей", false);
-            text(
+            control(
                 g,
-                if exact {
-                    "Точный FPS активен"
-                } else {
-                    "Базовый FPS"
-                },
-                10.,
-                false,
-                draw::C_DIM,
-                Rect::new(724., 594., 204., 48.),
-                ALIGN_CENTER,
+                ctx,
+                Action::ToggleCompact,
+                "Мини-режим · F7",
+                st.compact.load(Ordering::Relaxed),
             );
             let label = match st.update_status.load(Ordering::Relaxed) {
                 UPDATE_CHECKING => "Проверяю обновления…".into(),
@@ -639,6 +633,7 @@ fn perform(ctx: &mut PanelCtx, action: Action) {
             });
         }
         Action::ToggleOverlay => toggle_overlay(&st),
+        Action::ToggleCompact => st.toggle_compact(),
         Action::PreviousTarget => {
             st.cycle_target(-1);
             if st.target_count() < 2 {

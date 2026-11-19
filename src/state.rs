@@ -1,7 +1,9 @@
 //! Shared state between the control panel, the overlay and the measuring
 //! threads. Everything the UI reads lives here; no thread owns the truth.
 
-use std::sync::atomic::{AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU8, AtomicUsize, Ordering};
+use std::sync::atomic::{
+    AtomicBool, AtomicI32, AtomicIsize, AtomicU32, AtomicU8, AtomicUsize, Ordering,
+};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -36,6 +38,8 @@ pub struct AppState {
     /// Title of the window the overlay follows, e.g. "Rust".
     pub game_name: Mutex<String>,
     pub visible: AtomicBool,
+    pub compact: AtomicBool,
+    compact_change: Mutex<()>,
     /// Overlay size in percent of the designed card (100 = as designed).
     pub overlay_scale: AtomicU32,
     pub target_index: AtomicUsize,
@@ -77,6 +81,8 @@ impl AppState {
             fps_detail: Mutex::new(String::new()),
             game_name: Mutex::new(String::new()),
             visible: AtomicBool::new(true),
+            compact_change: Mutex::new(()),
+            compact: AtomicBool::new(crate::settings::load_preference("MiniMode", 0) != 0),
             overlay_scale: AtomicU32::new(crate::settings::DEFAULT_SCALE),
             target_index: AtomicUsize::new(0),
             follow_window: AtomicBool::new(true),
@@ -95,6 +101,19 @@ impl AppState {
             update_request: AtomicBool::new(false),
             update_file: Mutex::new(None),
         })
+    }
+
+    pub fn toggle_compact(&self) {
+        let Ok(_guard) = self.compact_change.lock() else {
+            return;
+        };
+        let enabled = !self.compact.fetch_xor(true, Ordering::Relaxed);
+        crate::settings::save_preference("MiniMode", enabled as u32);
+        self.set_notice(if enabled {
+            "Мини-режим включён"
+        } else {
+            "Полный оверлей включён"
+        });
     }
 
     /// Просит фоновый воркер проверить обновление. Повторный вызов во время

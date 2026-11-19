@@ -3,6 +3,12 @@
 Оверлей поверх игр: показывает **FPS** и **пинг** до выбранного сервера.
 Написан на Rust: Win32/GDI+, image (JPEG), reqwest с системным TLS Windows.
 
+## Версия 1.5.5
+
+Добавлен мини-режим — компактная стеклянная карточка FPS и пинга. Переключается кнопкой «Мини-режим · F7» в панели или глобальной клавишей F7. Выбор сохраняется после перезапуска, масштаб и оформление применяются к обоим режимам. При занятой клавише F7 используется резервная обработка.
+
+Исходник EXE-установщика WiX Burn находится в `installer/Bundle.wxs`. Он включает MSI внутрь Setup.exe.
+
 ## Версия 1.5.4
 
 Обновление предпочитает MSI, а отдельный EXE сохраняется по постоянному пути `%LOCALAPPDATA%\Programs\GameOverlay\GameOverlay.exe`. Создаётся ярлык меню «Пуск», существующий ярлык рабочего стола обновляется, включённый автозапуск переносится на новую копию. Временный загрузочный файл после этого можно удалить.
@@ -148,6 +154,16 @@ ICMP-заголовок лежит за `IHL`-байтами IP-заголовк
 # Установить Rust через https://rustup.rs
 powershell -ExecutionPolicy Bypass -File .\build.ps1
 # Результат: dist\GameOverlay.exe
+```
+
+Для MSI и Setup.exe нужен WiX Toolset 5 с расширениями `WixToolset.UI.wixext` и `WixToolset.Bal.wixext`. После сборки EXE:
+
+```powershell
+New-Item -ItemType Directory -Force installer\stage | Out-Null
+Copy-Item dist\GameOverlay.exe, installer\app.ico, installer\License.rtf installer\stage
+Copy-Item README.md installer\stage\README.txt
+wix build installer\GameOverlay.wxs -arch x64 -bindpath installer\stage -ext WixToolset.UI.wixext -o dist\GameOverlay-1.5.5-x64.msi
+wix build installer\Bundle.wxs -arch x64 -bindpath dist -bindpath installer -ext WixToolset.Bal.wixext -o dist\GameOverlay-1.5.5-Setup.exe
 ```
 
 Проверка на Windows: `cargo test --locked`. Чистые тесты геометрии на Linux:

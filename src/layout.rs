@@ -4,6 +4,7 @@ pub enum Action {
     ToggleAutostart,
     ToggleFollow,
     ToggleOverlay,
+    ToggleCompact,
     Scale(u32),
     PreviousTarget,
     NextTarget,
@@ -40,6 +41,7 @@ pub fn rect(action: Action) -> Rect {
         Action::Theme(i) => Rect::new(36. + i.min(4) as f32 * 43.5, 590., 40., 34.),
         Action::Glass => Rect::new(36., 634., 104., 36.),
         Action::Sound => Rect::new(148., 634., 104., 36.),
+        Action::ToggleCompact => Rect::new(724., 594., 204., 48.),
         Action::ToggleAutostart => Rect::new(292., 226., 636., 50.),
         Action::ToggleFollow => Rect::new(292., 284., 636., 50.),
         Action::ToggleOverlay => Rect::new(292., 342., 636., 50.),
@@ -77,6 +79,7 @@ pub fn actions() -> Vec<Action> {
         Action::NextTarget,
         Action::Elevate,
         Action::HideToTray,
+        Action::ToggleCompact,
         Action::CheckUpdate,
         Action::Quit,
     ]);

@@ -24,7 +24,7 @@ mod ui;
 mod update;
 
 /// Версия, которую приложение сравнивает с тегом последнего релиза.
-pub const APP_VERSION: &str = "1.5.4";
+pub const APP_VERSION: &str = "1.5.5";
 
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -55,6 +55,7 @@ OPTIONS:
 HOTKEYS:
     F1        show / hide the overlay
     F2 / F3   next / previous ping target
+    F7        compact / full overlay
     F4        toggle "follow the game window" positioning
     F6        toggle autostart (HKCU Run entry)
     End       quit
